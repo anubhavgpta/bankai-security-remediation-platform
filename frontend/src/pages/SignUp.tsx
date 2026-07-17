@@ -1,14 +1,41 @@
+import { useState } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import bankaiMark from '../assets/bankai-mark.svg';
 import bankaiWordmark from '../assets/bankai-wordmark.svg';
+import { ApiError, signup } from '../lib/api';
 import './AuthLayout.css';
 
 export default function SignUp() {
   const navigate = useNavigate();
+  const [fullName, setFullName] = useState('');
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [submitting, setSubmitting] = useState(false);
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    navigate('/onboarding');
+    setError(null);
+    setNotice(null);
+    setSubmitting(true);
+
+    try {
+      const result = await signup({ fullName, email, password });
+      if (result.status === 'confirmation_required') {
+        setNotice(result.message);
+        return;
+      }
+      navigate('/onboarding');
+    } catch (err) {
+      if (err instanceof ApiError) {
+        setError(err.fieldErrors?.[0]?.message ?? err.message);
+      } else {
+        setError('Something went wrong. Please try again.');
+      }
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   return (
@@ -22,22 +49,54 @@ export default function SignUp() {
         <h1 className="auth-title">Create your account</h1>
         <div className="auth-subtitle">Start triaging vulnerabilities with Bankai.</div>
 
-        <form className="auth-fields" onSubmit={handleSubmit}>
-          <div className="auth-field">
-            <label htmlFor="signup-name">Full name</label>
-            <input id="signup-name" className="auth-input" type="text" placeholder="Abhinav Gupta" required />
-          </div>
-          <div className="auth-field">
-            <label htmlFor="signup-email">Work email</label>
-            <input id="signup-email" className="auth-input" type="email" placeholder="you@company.com" required />
-          </div>
-          <div className="auth-field">
-            <label htmlFor="signup-password">Password</label>
-            <input id="signup-password" className="auth-input" type="password" placeholder="Create a password" required />
-          </div>
+        {notice ? (
+          <div className="auth-notice" role="status">{notice}</div>
+        ) : (
+          <form className="auth-fields" onSubmit={handleSubmit}>
+            {error && <div className="auth-error" role="alert">{error}</div>}
+            <div className="auth-field">
+              <label htmlFor="signup-name">Full name</label>
+              <input
+                id="signup-name"
+                className="auth-input"
+                type="text"
+                placeholder="Your name"
+                value={fullName}
+                onChange={(e) => setFullName(e.target.value)}
+                required
+              />
+            </div>
+            <div className="auth-field">
+              <label htmlFor="signup-email">Work email</label>
+              <input
+                id="signup-email"
+                className="auth-input"
+                type="email"
+                placeholder="you@company.com"
+                value={email}
+                onChange={(e) => setEmail(e.target.value)}
+                required
+              />
+            </div>
+            <div className="auth-field">
+              <label htmlFor="signup-password">Password</label>
+              <input
+                id="signup-password"
+                className="auth-input"
+                type="password"
+                placeholder="Create a password"
+                value={password}
+                onChange={(e) => setPassword(e.target.value)}
+                minLength={10}
+                required
+              />
+            </div>
 
-          <button type="submit" className="auth-submit">Create account</button>
-        </form>
+            <button type="submit" className="auth-submit" disabled={submitting}>
+              {submitting ? 'Creating account…' : 'Create account'}
+            </button>
+          </form>
+        )}
 
         <div className="auth-fineprint">
           By creating an account you agree to Bankai&apos;s Terms of Service and Privacy Policy.
