@@ -2,6 +2,9 @@ import { useEffect, useState, type ReactElement } from 'react';
 import { NavLink, useNavigate } from 'react-router-dom';
 import bankaiMark from '../assets/bankai-mark.svg';
 import bankaiWordmark from '../assets/bankai-wordmark.svg';
+import { logout } from '../lib/api';
+import { getAvatarStyle, getDisplayName, getInitials, useCurrentUser } from '../lib/auth-context';
+import { useProject } from '../lib/project-context';
 import './Sidebar.css';
 
 const ICONS: Record<string, ReactElement> = {
@@ -45,12 +48,12 @@ const ICONS: Record<string, ReactElement> = {
 };
 
 const NAV_ITEMS = [
-  { key: 'workflow', label: 'Remediation Workflow', to: '/workspace/workflow' },
-  { key: 'overview', label: 'Overview', to: '/workspace/overview' },
-  { key: 'intake', label: 'Report Intake', to: '/workspace/intake' },
-  { key: 'triage', label: 'AI Triage', to: '/workspace/triage' },
-  { key: 'tickets', label: 'Tickets', to: '/workspace/tickets' },
-  { key: 'activity', label: 'Activity', to: '/workspace/activity' },
+  { key: 'workflow', label: 'Remediation Workflow', path: 'workflow' },
+  { key: 'overview', label: 'Overview', path: 'overview' },
+  { key: 'intake', label: 'Report Intake', path: 'intake' },
+  { key: 'triage', label: 'AI Triage', path: 'triage' },
+  { key: 'tickets', label: 'Tickets', path: 'tickets' },
+  { key: 'activity', label: 'Activity', path: 'activity' },
 ];
 
 const STORAGE_KEY = 'bankai-sidebar-collapsed';
@@ -59,6 +62,21 @@ export default function Sidebar() {
   const [collapsed, setCollapsed] = useState(false);
   const [menuOpen, setMenuOpen] = useState(false);
   const navigate = useNavigate();
+  const { user, setUser } = useCurrentUser();
+  const { project } = useProject();
+  const projectId = project?.id;
+
+  const handleSignOut = async () => {
+    setMenuOpen(false);
+    try {
+      await logout();
+    } catch {
+      // Cookies may already be gone (e.g. expired session) — clearing local
+      // state and navigating away is still the right outcome either way.
+    }
+    setUser(null);
+    navigate('/login');
+  };
 
   useEffect(() => {
     try {
@@ -97,7 +115,7 @@ export default function Sidebar() {
           {NAV_ITEMS.map((item) => (
             <NavLink
               key={item.key}
-              to={item.to}
+              to={`/workspace/${projectId}/${item.path}`}
               title={item.label}
               className={({ isActive }) =>
                 `sidebar-nav-item ${isActive ? 'sidebar-nav-item--active' : ''} ${expanded ? '' : 'sidebar-nav-item--collapsed'}`
@@ -123,12 +141,12 @@ export default function Sidebar() {
         </div>
 
         <div className={`sidebar-user ${expanded ? '' : 'sidebar-user--collapsed'}`}>
-          <div className="avatar-ring">AG</div>
+          <div className="avatar-ring" style={getAvatarStyle(user)}>{getInitials(user)}</div>
           {expanded && (
             <>
               <div className="sidebar-user-info">
-                <div className="sidebar-user-name">Abhinav Gupta</div>
-                <div className="sidebar-user-email">abhiyug5@gmail.com</div>
+                <div className="sidebar-user-name">{getDisplayName(user)}</div>
+                {user?.email && <div className="sidebar-user-email">{user.email}</div>}
               </div>
               <button className="sidebar-user-menu-btn" onClick={() => setMenuOpen((v) => !v)}>
                 ⋯
@@ -140,7 +158,7 @@ export default function Sidebar() {
             <>
               <div className="sidebar-menu-backdrop" onClick={() => setMenuOpen(false)} />
               <div className="sidebar-menu">
-                <NavLink to="/workspace/settings" className="sidebar-menu-item" onClick={() => setMenuOpen(false)}>
+                <NavLink to={`/workspace/${projectId}/settings`} className="sidebar-menu-item" onClick={() => setMenuOpen(false)}>
                   <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
                     <circle cx="12" cy="12" r="3"></circle>
                     <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
@@ -152,8 +170,7 @@ export default function Sidebar() {
                   className="sidebar-menu-item sidebar-menu-item--danger"
                   onClick={(e) => {
                     e.preventDefault();
-                    setMenuOpen(false);
-                    navigate('/login');
+                    void handleSignOut();
                   }}
                 >
                   <svg width="16" height="16" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">

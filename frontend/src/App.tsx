@@ -1,4 +1,5 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
+import AccountSettings from './pages/AccountSettings';
 import Login from './pages/Login';
 import SignUp from './pages/SignUp';
 import Onboarding from './pages/Onboarding';
@@ -27,8 +28,9 @@ export default function App() {
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/projects" element={<Projects />} />
       <Route path="/projects/new" element={<NewProject />} />
+      <Route path="/settings" element={<AccountSettings />} />
 
-      <Route path="/workspace" element={<Workspace />}>
+      <Route path="/workspace/:projectId" element={<Workspace />}>
         <Route index element={<Navigate to="workflow" replace />} />
         <Route path="workflow" element={<RemediationWorkflow />} />
         <Route path="workflow/intake-triage" element={<IntakeDetail />} />

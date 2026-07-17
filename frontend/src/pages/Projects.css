@@ -76,8 +76,18 @@
 }
 
 .project-card--muted {
-  opacity: 0.6;
-  cursor: default;
+  opacity: 0.7;
+}
+
+.project-card--muted:hover {
+  opacity: 1;
+  border-color: var(--color-border-strong);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.08);
+}
+
+.project-card--muted .project-card-footer {
+  color: var(--color-blue);
+  font-weight: 600;
 }
 
 .project-card-status-row {

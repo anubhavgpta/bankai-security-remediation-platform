@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
+import { useProject } from '../../lib/project-context';
 import './StepDetail.css';
 
 const MAPPING = [
@@ -21,15 +23,11 @@ const LINKAGE = [
 ];
 
 export default function JiraTicketsDetail() {
+  const { project } = useProject();
+
   return (
     <main className="ws-page ws-page--narrow">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Jira Tickets</span>
-      </div>
+      <WorkspaceBreadcrumb current="Jira Tickets" />
       <div className="ws-divider" />
 
       <section className="ws-card step-header">
@@ -39,7 +37,7 @@ export default function JiraTicketsDetail() {
           <div className="step-header-sub">Defects to tickets with PR/CR/CD · project BNK · last synced today 07:40</div>
         </div>
         <span className="step-header-status ws-badge--pill-neutral">Pending</span>
-        <Link to="/workspace/tickets" className="step-header-next">Open board →</Link>
+        <Link to={`/workspace/${project?.id}/tickets`} className="step-header-next">Open board →</Link>
       </section>
 
       <section className="ws-card step-section">

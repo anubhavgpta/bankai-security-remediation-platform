@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
+import { useProject } from '../../lib/project-context';
 import './StepDetail.css';
 
 type Severity = 'Critical' | 'High' | 'Medium' | 'Low';
@@ -24,15 +26,11 @@ function sevBadgeClass(sev: Severity) {
 }
 
 export default function DefectGenerationDetail() {
+  const { project } = useProject();
+
   return (
     <main className="ws-page ws-page--narrow">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Defect Generation</span>
-      </div>
+      <WorkspaceBreadcrumb current="Defect Generation" />
       <div className="ws-divider" />
 
       <section className="ws-card step-header">
@@ -42,7 +40,7 @@ export default function DefectGenerationDetail() {
           <div className="step-header-sub">XLS to structured defects per service · last run Mon, Jul 6 · 09:06</div>
         </div>
         <span className="step-header-status ws-badge--pill-green">✓ Complete</span>
-        <Link to="/workspace/workflow/jira-tickets" className="step-header-next">Next: Jira Tickets →</Link>
+        <Link to={`/workspace/${project?.id}/workflow/jira-tickets`} className="step-header-next">Next: Jira Tickets →</Link>
       </section>
 
       <section className="ws-card step-section">

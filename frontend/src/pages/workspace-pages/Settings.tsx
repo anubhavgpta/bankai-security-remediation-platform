@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
 import './Settings.css';
 
 const SLA_TIERS = [
@@ -31,13 +31,7 @@ export default function Settings() {
 
   return (
     <main className="ws-page ws-page--settings">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Settings</span>
-      </div>
+      <WorkspaceBreadcrumb current="Settings" />
       <div className="ws-divider" />
 
       <section className="ws-card settings-section">

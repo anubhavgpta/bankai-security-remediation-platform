@@ -1,4 +1,6 @@
 import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
+import { useProject } from '../../lib/project-context';
 import './StepDetail.css';
 
 const MAPPING = [
@@ -23,15 +25,11 @@ const RULES = [
 ];
 
 export default function IntakeDetail() {
+  const { project } = useProject();
+
   return (
     <main className="ws-page ws-page--narrow">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Intake &amp; Triage</span>
-      </div>
+      <WorkspaceBreadcrumb current="Intake & Triage" />
       <div className="ws-divider" />
 
       <section className="ws-card step-header">
@@ -41,7 +39,7 @@ export default function IntakeDetail() {
           <div className="step-header-sub">CSV to XLS, split by service · last run Mon, Jul 6 · 09:05 on weekly_scan_jul06.csv</div>
         </div>
         <span className="step-header-status ws-badge--pill-green">✓ Complete</span>
-        <Link to="/workspace/workflow/defect-generation" className="step-header-next">Next: Defect Generation →</Link>
+        <Link to={`/workspace/${project?.id}/workflow/defect-generation`} className="step-header-next">Next: Defect Generation →</Link>
       </section>
 
       <section className="ws-card step-section">

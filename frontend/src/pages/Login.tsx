@@ -3,10 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import bankaiMark from '../assets/bankai-mark.svg';
 import bankaiWordmark from '../assets/bankai-wordmark.svg';
 import { ApiError, login } from '../lib/api';
+import { useCurrentUser } from '../lib/auth-context';
 import './AuthLayout.css';
 
 export default function Login() {
   const navigate = useNavigate();
+  const { setUser } = useCurrentUser();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -18,7 +20,8 @@ export default function Login() {
     setSubmitting(true);
 
     try {
-      await login({ email, password });
+      const result = await login({ email, password });
+      setUser(result.user);
       navigate('/projects');
     } catch (err) {
       if (err instanceof ApiError) {

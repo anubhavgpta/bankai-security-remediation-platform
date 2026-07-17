@@ -1,91 +1,141 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
+import { getOverview, type Overview as OverviewData } from '../../lib/api';
+import { useProject } from '../../lib/project-context';
 import './Overview.css';
 
-const KPI_CARDS = [
-  { label: 'Total CVITs', value: '376', delta: '▲ 5 vs last week', deltaColor: '#DC2626' },
-  { label: 'SLA breached', value: '40.4', unit: '%', delta: '▼ 2.1 pts vs last week', deltaColor: '#16A34A' },
-  { label: 'Open tickets', value: '37', delta: 'no change', deltaColor: '#8A8A8E' },
-  { label: 'Mean time to remediate', value: '11.4', unit: 'd', delta: '▼ 0.8d vs last week', deltaColor: '#16A34A' },
-];
+const SEVERITY_COLORS: Record<string, string> = { Critical: '#DC2626', High: '#F97316', Medium: '#EAB308', Low: '#8A8A8E' };
 
-const SEVERITY_DISTRIBUTION = [
-  { label: 'Critical', count: 41, pct: 11, color: '#DC2626' },
-  { label: 'High', count: 118, pct: 31, color: '#F97316' },
-  { label: 'Medium', count: 152, pct: 40, color: '#EAB308' },
-  { label: 'Low', count: 65, pct: 17, color: '#8A8A8E' },
-];
+function formatEventTime(iso: string): string {
+  const date = new Date(iso);
+  const now = new Date();
+  const sameDay = date.toDateString() === now.toDateString();
+  return sameDay
+    ? `Today ${date.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false })}`
+    : date.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+}
 
-const SERVICE_ROWS = [
-  { name: 'Identity Core', total: 152, missed: 64, approaching: 21, onTrack: 67 },
-  { name: 'Identity Apps', total: 224, missed: 88, approaching: 30, onTrack: 106 },
-];
+function buildTrend(trend: OverviewData['trend']) {
+  if (trend.length === 0) return null;
 
-const RECENT_ACTIVITY = [
-  { dot: '#EF4444', text: <><strong>CVIT-2214</strong> breached its SLA (Identity Apps)</>, time: 'Today 08:12' },
-  { dot: '#2563EB', text: <><strong>BNK-142</strong> synced with Jira</>, time: 'Today 07:40' },
-  { dot: '#22C55E', text: <>AI triage completed for <strong>weekly_scan_jul06.csv</strong></>, time: 'Mon 09:05' },
-  { dot: '#8A8A8E', text: <><strong>weekly_scan_jul06.csv</strong> uploaded by Abhinav</>, time: 'Mon 09:01' },
-];
+  const maxVal = Math.max(1, ...trend.map((t) => t.totalFindings));
+  const points = trend.map((t, i) => {
+    const x = trend.length === 1 ? 360 : 10 + (700 * i) / (trend.length - 1);
+    const y = 190 - (170 * t.totalFindings) / maxVal;
+    return { x, y, date: t.date };
+  });
+  const linePath = points.map((p, i) => `${i === 0 ? 'M' : 'L'}${p.x.toFixed(1)},${p.y.toFixed(1)}`).join(' ');
+  const areaPath = `${linePath} L${points[points.length - 1]!.x.toFixed(1)},190 L${points[0]!.x.toFixed(1)},190 Z`;
+  const last = points[points.length - 1]!;
 
-const TREND_PATH = 'M10,176 L110,156 L210,114 L310,136 L410,91 L510,71 L610,52 L710,44';
-const TREND_AREA = `${TREND_PATH} L710,190 L10,190 Z`;
-const TREND_LABELS = ['May 18', 'May 25', 'Jun 1', 'Jun 8', 'Jun 15', 'Jun 22', 'Jun 29', 'Jul 6'];
+  return { points, linePath, areaPath, last };
+}
 
 export default function Overview() {
+  const { project } = useProject();
+  const [overview, setOverview] = useState<OverviewData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    getOverview(project.id)
+      .then(({ overview: fetched }) => {
+        if (!cancelled) setOverview(fetched);
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load the project overview.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  if (error) {
+    return (
+      <main className="ws-page">
+        <WorkspaceBreadcrumb current="Overview" />
+        <div className="ws-divider" />
+        <div className="ws-empty"><div className="ws-empty-title">{error}</div></div>
+      </main>
+    );
+  }
+
+  if (!overview) {
+    return (
+      <main className="ws-page">
+        <WorkspaceBreadcrumb current="Overview" />
+        <div className="ws-divider" />
+        <div className="page-subtitle">Loading overview…</div>
+      </main>
+    );
+  }
+
+  const trend = buildTrend(overview.trend);
+
   return (
     <main className="ws-page">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Overview</span>
-      </div>
+      <WorkspaceBreadcrumb current="Overview" />
       <div className="ws-divider" />
 
       <div className="overview-kpi-grid">
-        {KPI_CARDS.map((kpi) => (
-          <div key={kpi.label} className="ws-card overview-kpi-card">
-            <div className="overview-kpi-label">{kpi.label}</div>
-            <div className="overview-kpi-value">
-              {kpi.value}
-              {kpi.unit && <span className="overview-kpi-unit">{kpi.unit}</span>}
-            </div>
-            <div className="overview-kpi-delta" style={{ color: kpi.deltaColor }}>{kpi.delta}</div>
-          </div>
-        ))}
+        <div className="ws-card overview-kpi-card">
+          <div className="overview-kpi-label">Total CVITs</div>
+          <div className="overview-kpi-value">{overview.kpis.totalCvits}</div>
+        </div>
+        <div className="ws-card overview-kpi-card">
+          <div className="overview-kpi-label">SLA breached</div>
+          <div className="overview-kpi-value">{overview.kpis.slaBreachedPct}<span className="overview-kpi-unit">%</span></div>
+        </div>
+        <div className="ws-card overview-kpi-card">
+          <div className="overview-kpi-label">Open tickets</div>
+          <div className="overview-kpi-value">{overview.kpis.openTickets}</div>
+        </div>
+        <div className="ws-card overview-kpi-card">
+          <div className="overview-kpi-label">Mean time to remediate</div>
+          <div className="overview-kpi-value">{overview.kpis.meanTimeToRemediateDays}<span className="overview-kpi-unit">d</span></div>
+        </div>
       </div>
 
       <div className="overview-trend-grid">
         <section className="ws-card overview-trend-card">
-          <div className="ws-card-eyebrow">Last 8 weeks</div>
+          <div className="ws-card-eyebrow">Scan history</div>
           <h2 className="ws-card-title">CVITs over time</h2>
-          <svg viewBox="0 0 720 210" className="overview-trend-svg">
-            <line x1="10" y1="10" x2="710" y2="10" stroke="var(--color-divider)" strokeWidth="1" />
-            <line x1="10" y1="70" x2="710" y2="70" stroke="var(--color-divider)" strokeWidth="1" />
-            <line x1="10" y1="130" x2="710" y2="130" stroke="var(--color-divider)" strokeWidth="1" />
-            <line x1="10" y1="190" x2="710" y2="190" stroke="var(--color-divider)" strokeWidth="1" />
-            <path d={TREND_AREA} fill="rgba(37,99,235,0.07)" />
-            <path d={TREND_PATH} fill="none" stroke="var(--color-blue)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
-            <circle cx="710" cy="44" r="4.5" fill="var(--color-blue)" stroke="var(--color-surface)" strokeWidth="2" />
-          </svg>
-          <div className="overview-trend-labels">
-            {TREND_LABELS.map((l) => <span key={l}>{l}</span>)}
-          </div>
+          {trend ? (
+            <>
+              <svg viewBox="0 0 720 210" className="overview-trend-svg">
+                <line x1="10" y1="10" x2="710" y2="10" stroke="var(--color-divider)" strokeWidth="1" />
+                <line x1="10" y1="70" x2="710" y2="70" stroke="var(--color-divider)" strokeWidth="1" />
+                <line x1="10" y1="130" x2="710" y2="130" stroke="var(--color-divider)" strokeWidth="1" />
+                <line x1="10" y1="190" x2="710" y2="190" stroke="var(--color-divider)" strokeWidth="1" />
+                <path d={trend.areaPath} fill="rgba(37,99,235,0.07)" />
+                <path d={trend.linePath} fill="none" stroke="var(--color-blue)" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" />
+                <circle cx={trend.last.x} cy={trend.last.y} r="4.5" fill="var(--color-blue)" stroke="var(--color-surface)" strokeWidth="2" />
+              </svg>
+              <div className="overview-trend-labels">
+                {trend.points.map((p) => (
+                  <span key={p.date}>{new Date(p.date).toLocaleDateString('en-US', { month: 'short', day: 'numeric' })}</span>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div className="page-subtitle">No scans uploaded yet.</div>
+          )}
         </section>
 
         <section className="ws-card overview-severity-card">
           <div className="ws-card-eyebrow">All services</div>
           <h2 className="ws-card-title">Severity distribution</h2>
           <div className="overview-severity-list">
-            {SEVERITY_DISTRIBUTION.map((s) => (
+            {overview.severityDistribution.map((s) => (
               <div key={s.label}>
                 <div className="overview-severity-row">
                   <span className="overview-severity-name">{s.label}</span>
                   <span className="overview-severity-count">{s.count}</span>
                 </div>
                 <div className="ws-progress-track">
-                  <div className="ws-progress-fill" style={{ width: `${s.pct}%`, background: s.color }} />
+                  <div className="ws-progress-fill" style={{ width: `${s.pct}%`, background: SEVERITY_COLORS[s.label] }} />
                 </div>
               </div>
             ))}
@@ -97,32 +147,49 @@ export default function Overview() {
         <section className="ws-card overview-service-card">
           <div className="ws-card-eyebrow">Per service</div>
           <h2 className="ws-card-title">Service breakdown</h2>
-          <div className="overview-service-head">
-            <span>Service</span>
-            <span className="ws-col-right">Total</span>
-            <span className="ws-col-right">Missed SLA</span>
-            <span className="ws-col-right">Approaching</span>
-            <span className="ws-col-right">On track</span>
-          </div>
-          {SERVICE_ROWS.map((row) => (
-            <div key={row.name} className="overview-service-row">
-              <span className="overview-service-name">{row.name}</span>
-              <span className="ws-col-right overview-service-total">{row.total}</span>
-              <span className="ws-col-right overview-service-missed">{row.missed}</span>
-              <span className="ws-col-right overview-service-approaching">{row.approaching}</span>
-              <span className="ws-col-right overview-service-ontrack">{row.onTrack}</span>
-            </div>
-          ))}
-          <div className="overview-service-bar">
-            <div style={{ width: '40.4%', background: '#EF4444' }} />
-            <div style={{ width: '13.6%', background: '#EAB308' }} />
-            <div style={{ width: '46%', background: '#22C55E' }} />
-          </div>
-          <div className="overview-service-legend">
-            <span><span className="overview-legend-dot" style={{ background: '#EF4444' }} />Missed SLA</span>
-            <span><span className="overview-legend-dot" style={{ background: '#EAB308' }} />Approaching</span>
-            <span><span className="overview-legend-dot" style={{ background: '#22C55E' }} />On track</span>
-          </div>
+          {overview.serviceBreakdown.length === 0 ? (
+            <div className="page-subtitle">No findings yet.</div>
+          ) : (
+            <>
+              <div className="overview-service-head">
+                <span>Service</span>
+                <span className="ws-col-right">Total</span>
+                <span className="ws-col-right">Missed SLA</span>
+                <span className="ws-col-right">Approaching</span>
+                <span className="ws-col-right">On track</span>
+              </div>
+              {overview.serviceBreakdown.map((row) => (
+                <div key={row.name} className="overview-service-row">
+                  <span className="overview-service-name">{row.name}</span>
+                  <span className="ws-col-right overview-service-total">{row.total}</span>
+                  <span className="ws-col-right overview-service-missed">{row.missed}</span>
+                  <span className="ws-col-right overview-service-approaching">{row.approaching}</span>
+                  <span className="ws-col-right overview-service-ontrack">{row.onTrack}</span>
+                </div>
+              ))}
+              <div className="overview-service-bar">
+                {(() => {
+                  const totals = overview.serviceBreakdown.reduce(
+                    (acc, s) => ({ missed: acc.missed + s.missed, approaching: acc.approaching + s.approaching, onTrack: acc.onTrack + s.onTrack }),
+                    { missed: 0, approaching: 0, onTrack: 0 },
+                  );
+                  const sum = Math.max(1, totals.missed + totals.approaching + totals.onTrack);
+                  return (
+                    <>
+                      <div style={{ width: `${(totals.missed / sum) * 100}%`, background: '#EF4444' }} />
+                      <div style={{ width: `${(totals.approaching / sum) * 100}%`, background: '#EAB308' }} />
+                      <div style={{ width: `${(totals.onTrack / sum) * 100}%`, background: '#22C55E' }} />
+                    </>
+                  );
+                })()}
+              </div>
+              <div className="overview-service-legend">
+                <span><span className="overview-legend-dot" style={{ background: '#EF4444' }} />Missed SLA</span>
+                <span><span className="overview-legend-dot" style={{ background: '#EAB308' }} />Approaching</span>
+                <span><span className="overview-legend-dot" style={{ background: '#22C55E' }} />On track</span>
+              </div>
+            </>
+          )}
         </section>
 
         <section className="ws-card overview-activity-card">
@@ -131,16 +198,22 @@ export default function Overview() {
               <div className="ws-card-eyebrow">Latest events</div>
               <h2 className="ws-card-title">Recent activity</h2>
             </div>
-            <Link to="/workspace/activity" className="overview-activity-view-all">View all</Link>
+            <Link to={`/workspace/${project?.id}/activity`} className="overview-activity-view-all">View all</Link>
           </div>
           <div>
-            {RECENT_ACTIVITY.map((ev, i) => (
-              <div key={i} className="overview-activity-item">
-                <span className="ws-dot" style={{ background: ev.dot }} />
-                <span className="overview-activity-text">{ev.text}</span>
-                <span className="overview-activity-time">{ev.time}</span>
-              </div>
-            ))}
+            {overview.recentActivity.length === 0 ? (
+              <div className="page-subtitle">No activity yet.</div>
+            ) : (
+              overview.recentActivity.map((ev) => (
+                <div key={ev.id} className="overview-activity-item">
+                  <span className="ws-dot" style={{ background: ev.type === 'sla' ? '#EF4444' : ev.type === 'ticket' ? '#2563EB' : ev.type === 'triage' ? '#22C55E' : '#8A8A8E' }} />
+                  <span className="overview-activity-text">
+                    <strong>{ev.actor}</strong> {ev.summary} {ev.linkLabel && <strong>{ev.linkLabel}</strong>}
+                  </span>
+                  <span className="overview-activity-time">{formatEventTime(ev.createdAt)}</span>
+                </div>
+              ))
+            )}
           </div>
         </section>
       </div>

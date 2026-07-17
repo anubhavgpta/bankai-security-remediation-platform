@@ -20,3 +20,24 @@ export const loginSchema = z.object({
 });
 
 export type LoginInput = z.infer<typeof loginSchema>;
+
+export const updateProfileSchema = z.object({
+  fullName: z.string().trim().min(1, "Full name is required").max(120, "Full name is too long"),
+});
+
+export type UpdateProfileInput = z.infer<typeof updateProfileSchema>;
+
+const passwordSchema = z
+  .string()
+  .min(10, "Password must be at least 10 characters")
+  .max(128, "Password is too long")
+  .regex(/[a-z]/, "Password must include a lowercase letter")
+  .regex(/[A-Z]/, "Password must include an uppercase letter")
+  .regex(/[0-9]/, "Password must include a number");
+
+export const changePasswordSchema = z.object({
+  currentPassword: z.string().min(1, "Current password is required").max(128, "Password is too long"),
+  newPassword: passwordSchema,
+});
+
+export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;

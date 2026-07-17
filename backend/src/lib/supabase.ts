@@ -19,6 +19,24 @@ export function createRequestSupabaseClient() {
 }
 
 /**
+ * Client scoped to a single request's access token, so PostgREST evaluates
+ * row-level security as that user (auth.uid()) instead of the anon role.
+ * Used for all app-table reads/writes gated by ownership.
+ */
+export function createUserScopedSupabaseClient(accessToken: string) {
+  return createClient(env.SUPABASE_URL, env.SUPABASE_ANON_KEY, {
+    auth: {
+      persistSession: false,
+      autoRefreshToken: false,
+      detectSessionInUrl: false,
+    },
+    global: {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    },
+  });
+}
+
+/**
  * Service-role client, used only where a privileged operation is required
  * (currently: revoking a user's refresh token on logout). Never expose this
  * client or its key to a request handler that echoes data back unfiltered.

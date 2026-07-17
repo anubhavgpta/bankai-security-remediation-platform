@@ -8,6 +8,7 @@ import { logger } from "./lib/logger.js";
 import { errorHandler } from "./middleware/error-handler.js";
 import { originCheck } from "./middleware/origin-check.js";
 import { authRouter } from "./routes/auth.routes.js";
+import { projectRouter } from "./routes/project.routes.js";
 
 export function createApp(): Express {
   const app = express();
@@ -39,6 +40,7 @@ export function createApp(): Express {
   });
 
   app.use("/api/auth", authRouter);
+  app.use("/api/projects", projectRouter);
 
   app.use((_req, res) => {
     res.status(404).json({ error: "Not found" });

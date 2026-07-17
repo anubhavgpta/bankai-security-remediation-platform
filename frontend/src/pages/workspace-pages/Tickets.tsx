@@ -1,37 +1,11 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
+import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
+import { listTickets, type Severity, type Ticket, type TicketStatus } from '../../lib/api';
+import { useProject } from '../../lib/project-context';
 import './Tickets.css';
 
-type Severity = 'Critical' | 'High' | 'Medium' | 'Low';
-type Status = 'To Do' | 'In Progress' | 'In Review' | 'Done';
-
-interface Ticket {
-  key: string;
-  title: string;
-  service: string;
-  severity: Severity;
-  cvit: string;
-  refs: string[];
-  assignee: string;
-  avatarBg: string;
-  due: string;
-  overdue: boolean;
-  status: Status;
-}
-
-const DATA: Ticket[] = [
-  { key: 'BNK-108', title: 'Fix SQL injection in legacy admin search', service: 'Identity Apps', severity: 'Critical', cvit: 'CVIT-2183', refs: ['PR-2841', 'CR-1094'], assignee: 'PK', avatarBg: '#2563EB', due: 'Jun 30', overdue: true, status: 'In Progress' },
-  { key: 'BNK-112', title: 'Patch OpenSSL heap overflow on idp-apps runtime', service: 'Identity Apps', severity: 'Critical', cvit: 'CVIT-2214', refs: ['PR-2867', 'CD-553'], assignee: 'SR', avatarBg: '#7C3AED', due: 'Jul 4', overdue: true, status: 'In Review' },
-  { key: 'BNK-118', title: 'Enforce SAML response signature on ACS endpoint', service: 'Identity Core', severity: 'Critical', cvit: 'CVIT-2231', refs: ['PR-2870'], assignee: 'AG', avatarBg: '#22C55E', due: 'Jul 11', overdue: false, status: 'In Progress' },
-  { key: 'BNK-121', title: 'Rotate expiring intermediate TLS certificate', service: 'Identity Core', severity: 'High', cvit: 'CVIT-2244', refs: ['CR-1101', 'CD-561'], assignee: 'MT', avatarBg: '#EA580C', due: 'Jul 18', overdue: false, status: 'To Do' },
-  { key: 'BNK-124', title: 'Bump sdk-commons to drop log4j 2.17 dependency', service: 'Identity Apps', severity: 'High', cvit: 'CVIT-2250', refs: ['PR-2833'], assignee: 'PK', avatarBg: '#2563EB', due: 'Jul 15', overdue: false, status: 'In Progress' },
-  { key: 'BNK-127', title: 'Add rate limiting to password reset endpoint', service: 'Identity Core', severity: 'Medium', cvit: 'CVIT-2205', refs: ['PR-2872', 'CR-1103'], assignee: 'AG', avatarBg: '#22C55E', due: 'Jul 24', overdue: false, status: 'To Do' },
-  { key: 'BNK-129', title: 'Remove public read ACL from idp-export-archive', service: 'Identity Apps', severity: 'High', cvit: 'CVIT-2259', refs: ['CR-1105'], assignee: 'SR', avatarBg: '#7C3AED', due: 'Jul 20', overdue: false, status: 'To Do' },
-  { key: 'BNK-102', title: 'Upgrade edge nginx for HTTP/2 rapid reset', service: 'Identity Core', severity: 'Low', cvit: 'CVIT-2158', refs: ['PR-2799', 'CD-540'], assignee: 'MT', avatarBg: '#EA580C', due: 'Jul 2', overdue: false, status: 'Done' },
-  { key: 'BNK-095', title: 'Rebuild shared base image against upstream tag', service: 'Identity Apps', severity: 'Low', cvit: 'CVIT-2172', refs: ['PR-2781', 'CD-534'], assignee: 'PK', avatarBg: '#2563EB', due: 'Jun 26', overdue: false, status: 'Done' },
-];
-
-const COLUMNS: { name: Status; dot: string }[] = [
+const COLUMNS: { name: TicketStatus; dot: string }[] = [
   { name: 'To Do', dot: '#8A8A8E' },
   { name: 'In Progress', dot: '#2563EB' },
   { name: 'In Review', dot: '#EAB308' },
@@ -42,47 +16,77 @@ function sevBadgeClass(sev: Severity) {
   return `ws-badge ws-badge--${sev.toLowerCase()}`;
 }
 
-function statusColor(status: Status) {
+function statusColor(status: TicketStatus) {
   if (status === 'To Do') return { dot: '#8A8A8E', color: '#3A3A3C' };
   if (status === 'In Progress') return { dot: '#2563EB', color: '#1D4ED8' };
   if (status === 'In Review') return { dot: '#EAB308', color: '#A16207' };
   return { dot: '#22C55E', color: '#15803D' };
 }
 
+function formatDue(dueDate: string | null): string {
+  if (!dueDate) return 'No due date';
+  return new Date(`${dueDate}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+}
+
 export default function Tickets() {
+  const { project } = useProject();
+  const [tickets, setTickets] = useState<Ticket[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [fService, setFService] = useState('all');
   const [fSeverity, setFSeverity] = useState('all');
   const [view, setView] = useState<'kanban' | 'table'>('kanban');
 
+  useEffect(() => {
+    if (!project) return;
+    let cancelled = false;
+    listTickets(project.id)
+      .then(({ tickets: fetched }) => {
+        if (!cancelled) setTickets(fetched);
+      })
+      .catch(() => {
+        if (!cancelled) setError('Could not load tickets. Please try again.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [project?.id]);
+
+  const services = useMemo(() => Array.from(new Set((tickets ?? []).map((t) => t.service))).sort(), [tickets]);
+
   const filtered = useMemo(
-    () => DATA.filter((t) => (fService === 'all' || t.service === fService) && (fSeverity === 'all' || t.severity === fSeverity)),
-    [fService, fSeverity]
+    () => (tickets ?? []).filter((t) => (fService === 'all' || t.service === fService) && (fSeverity === 'all' || t.severity === fSeverity)),
+    [tickets, fService, fSeverity],
   );
 
   const columns = COLUMNS.map((c) => ({ ...c, cards: filtered.filter((t) => t.status === c.name) }));
 
+  if (error) {
+    return (
+      <main className="ws-page">
+        <WorkspaceBreadcrumb current="Tickets" />
+        <div className="ws-divider" />
+        <div className="ws-empty">
+          <div className="ws-empty-title">{error}</div>
+        </div>
+      </main>
+    );
+  }
+
   return (
     <main className="ws-page">
-      <div className="ws-breadcrumb">
-        <Link to="/projects" className="ws-breadcrumb-link">Bankai</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <Link to="/workspace/workflow" className="ws-breadcrumb-link">Identity Platform</Link>
-        <span className="ws-breadcrumb-sep">›</span>
-        <span className="ws-breadcrumb-current">Tickets</span>
-      </div>
+      <WorkspaceBreadcrumb current="Tickets" />
       <div className="ws-divider" />
 
       <div className="tickets-title-row">
-        <div className="ws-header-eyebrow">Generated by Bankai · project BNK</div>
-        <h2 className="ws-header-title">Jira tickets</h2>
+        <div className="ws-header-eyebrow">Bankai-internal tickets · Jira sync not connected</div>
+        <h2 className="ws-header-title">Tickets</h2>
       </div>
 
       <div className="tickets-toolbar">
         <div className="tickets-toolbar-left">
           <select className="ws-select" value={fService} onChange={(e) => setFService(e.target.value)}>
             <option value="all">All services</option>
-            <option value="Identity Core">Identity Core</option>
-            <option value="Identity Apps">Identity Apps</option>
+            {services.map((s) => <option key={s} value={s}>{s}</option>)}
           </select>
           <select className="ws-select" value={fSeverity} onChange={(e) => setFSeverity(e.target.value)}>
             <option value="all">All severities</option>
@@ -97,74 +101,82 @@ export default function Tickets() {
           </div>
         </div>
         <div className="tickets-toolbar-right">
-          <span className="tickets-sync-label">Last synced today 07:40</span>
-          <button className="ws-btn ws-btn-primary" style={{ padding: '9px 18px', fontSize: 13 }}>
+          <button className="ws-btn ws-btn-disabled" disabled title="Jira isn't connected yet — tickets stay in Bankai for now." style={{ padding: '9px 18px', fontSize: 13, cursor: 'not-allowed' }}>
             <svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round"><path d="M13.5 8a5.5 5.5 0 1 1-1.6-3.9" /><path d="M13.5 1.5v3h-3" /></svg>
             Sync with Jira
           </button>
         </div>
       </div>
 
-      {view === 'kanban' && (
-        <div className="tickets-kanban">
-          {columns.map((col) => (
-            <div key={col.name} className="tickets-kanban-col">
-              <div className="tickets-kanban-col-header">
-                <span className="ws-dot" style={{ background: col.dot }} />
-                <span className="tickets-kanban-col-name">{col.name}</span>
-                <span className="tickets-kanban-col-count">{col.cards.length}</span>
-              </div>
-              <div className="tickets-kanban-cards">
-                {col.cards.map((t) => (
-                  <div key={t.key} className="tickets-kanban-card">
-                    <div className="tickets-kanban-card-top">
-                      <span className="ws-mono tickets-kanban-card-key">{t.key}</span>
-                      <span className={sevBadgeClass(t.severity)} style={{ padding: '2.5px 9px', fontSize: 10.5 }}>{t.severity}</span>
-                    </div>
-                    <div className="tickets-kanban-card-title">{t.title}</div>
-                    <div className="tickets-kanban-card-meta">
-                      {t.service} · <Link to="/workspace/triage" className="tickets-kanban-card-cvit">{t.cvit}</Link>
-                    </div>
-                    <div className="tickets-kanban-card-refs">
-                      {t.refs.map((ref) => <span key={ref} className="ws-mono tickets-ref-chip">{ref}</span>)}
-                    </div>
-                    <div className="tickets-kanban-card-footer">
-                      <span className="ws-avatar-chip" style={{ background: t.avatarBg, width: 24, height: 24, fontSize: 9.5 }}>{t.assignee}</span>
-                      <span className="tickets-kanban-card-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
-                        {t.overdue ? 'Overdue · ' : 'Due '}{t.due}
-                      </span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ))}
+      {!tickets ? (
+        <div className="page-subtitle">Loading tickets…</div>
+      ) : tickets.length === 0 ? (
+        <div className="ws-empty">
+          <div className="ws-empty-title">No tickets yet</div>
+          <div className="ws-empty-body">Accept findings in AI Triage and mark them for Jira to create tickets here.</div>
         </div>
-      )}
+      ) : (
+        <>
+          {view === 'kanban' && (
+            <div className="tickets-kanban">
+              {columns.map((col) => (
+                <div key={col.name} className="tickets-kanban-col">
+                  <div className="tickets-kanban-col-header">
+                    <span className="ws-dot" style={{ background: col.dot }} />
+                    <span className="tickets-kanban-col-name">{col.name}</span>
+                    <span className="tickets-kanban-col-count">{col.cards.length}</span>
+                  </div>
+                  <div className="tickets-kanban-cards">
+                    {col.cards.map((t) => (
+                      <div key={t.id} className="tickets-kanban-card">
+                        <div className="tickets-kanban-card-top">
+                          <span className="ws-mono tickets-kanban-card-key">{t.key}</span>
+                          <span className={sevBadgeClass(t.severity)} style={{ padding: '2.5px 9px', fontSize: 10.5 }}>{t.severity}</span>
+                        </div>
+                        <div className="tickets-kanban-card-title">{t.title}</div>
+                        <div className="tickets-kanban-card-meta">
+                          {t.service}
+                          {t.findingExternalId && (
+                            <> · <Link to={`/workspace/${project?.id}/triage`} className="tickets-kanban-card-cvit">{t.findingExternalId}</Link></>
+                          )}
+                        </div>
+                        <div className="tickets-kanban-card-footer">
+                          <span className="tickets-kanban-card-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
+                            {t.overdue ? 'Overdue · ' : 'Due '}{formatDue(t.dueDate)}
+                          </span>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
-      {view === 'table' && (
-        <section className="ws-table">
-          <div className="ws-table-head tickets-grid">
-            <span>Key</span><span>Title</span><span>Service</span><span>Severity</span><span>CVIT</span><span>References</span><span>Status</span><span className="ws-col-right">SLA due</span>
-          </div>
-          {filtered.map((t) => {
-            const sc = statusColor(t.status);
-            return (
-              <div key={t.key} className="ws-table-row tickets-grid">
-                <span className="ws-mono tickets-table-key">{t.key}</span>
-                <span className="tickets-table-title">{t.title}</span>
-                <span className="tickets-table-service">{t.service}</span>
-                <span><span className={sevBadgeClass(t.severity)}>{t.severity}</span></span>
-                <span className="ws-mono tickets-table-cvit">{t.cvit}</span>
-                <span className="ws-mono tickets-table-refs">{t.refs.join('  ')}</span>
-                <span className="ws-dot-status" style={{ color: sc.color }}><span className="ws-dot" style={{ background: sc.dot }} />{t.status}</span>
-                <span className="ws-col-right tickets-table-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
-                  {t.overdue ? 'Overdue · ' : 'Due '}{t.due}
-                </span>
+          {view === 'table' && (
+            <section className="ws-table">
+              <div className="ws-table-head tickets-grid">
+                <span>Key</span><span>Title</span><span>Service</span><span>Severity</span><span>CVIT</span><span>Status</span><span className="ws-col-right">SLA due</span>
               </div>
-            );
-          })}
-        </section>
+              {filtered.map((t) => {
+                const sc = statusColor(t.status);
+                return (
+                  <div key={t.id} className="ws-table-row tickets-grid">
+                    <span className="ws-mono tickets-table-key">{t.key}</span>
+                    <span className="tickets-table-title">{t.title}</span>
+                    <span className="tickets-table-service">{t.service}</span>
+                    <span><span className={sevBadgeClass(t.severity)}>{t.severity}</span></span>
+                    <span className="ws-mono tickets-table-cvit">{t.findingExternalId ?? '—'}</span>
+                    <span className="ws-dot-status" style={{ color: sc.color }}><span className="ws-dot" style={{ background: sc.dot }} />{t.status}</span>
+                    <span className="ws-col-right tickets-table-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
+                      {t.overdue ? 'Overdue · ' : 'Due '}{formatDue(t.dueDate)}
+                    </span>
+                  </div>
+                );
+              })}
+            </section>
+          )}
+        </>
       )}
     </main>
   );

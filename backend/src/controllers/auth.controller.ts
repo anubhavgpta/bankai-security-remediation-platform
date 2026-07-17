@@ -5,8 +5,8 @@ import { clearAuthCookies, readAuthCookies, setAuthCookies } from "../lib/auth-c
 import { assertArcjetAllowed } from "../lib/enforce-arcjet.js";
 import { loginArcjet, signupArcjet } from "../lib/arcjet.js";
 import { HttpError } from "../lib/http-error.js";
-import { createRequestSupabaseClient, supabaseAdmin } from "../lib/supabase.js";
-import type { LoginInput, SignupInput } from "../schemas/auth.schema.js";
+import { createRequestSupabaseClient, createUserScopedSupabaseClient, supabaseAdmin } from "../lib/supabase.js";
+import type { ChangePasswordInput, LoginInput, SignupInput, UpdateProfileInput } from "../schemas/auth.schema.js";
 
 function toPublicUser(user: User) {
   return {
@@ -133,4 +133,47 @@ export function me(req: Request, res: Response): void {
     throw new HttpError(401, "Not authenticated");
   }
   res.status(200).json({ user: toPublicUser(req.user) });
+}
+
+export async function updateProfile(req: Request, res: Response): Promise<void> {
+  const { fullName } = req.body as UpdateProfileInput;
+  const supabase = createUserScopedSupabaseClient(req.accessToken as string);
+
+  const { data, error } = await supabase.auth.updateUser({ data: { full_name: fullName } });
+  if (error || !data.user) {
+    throw new HttpError(400, error?.message ?? "Could not update your profile.");
+  }
+
+  // profiles.full_name is only kept in sync by a trigger on insert — mirror
+  // the change explicitly here so anything reading from profiles (not
+  // auth.users) doesn't see stale data.
+  await supabase.from("profiles").update({ full_name: fullName }).eq("id", req.user!.id);
+
+  res.status(200).json({ user: toPublicUser(data.user) });
+}
+
+export async function changePassword(req: Request, res: Response): Promise<void> {
+  const { currentPassword, newPassword } = req.body as ChangePasswordInput;
+  const email = req.user!.email;
+
+  if (!email) {
+    throw new HttpError(400, "This account has no email on file.");
+  }
+
+  // Supabase's updateUser trusts the current session and doesn't itself
+  // check the old password, so we verify it ourselves first with a
+  // throwaway sign-in before allowing the change.
+  const verifyClient = createRequestSupabaseClient();
+  const { error: verifyError } = await verifyClient.auth.signInWithPassword({ email, password: currentPassword });
+  if (verifyError) {
+    throw new HttpError(401, "Current password is incorrect.");
+  }
+
+  const supabase = createUserScopedSupabaseClient(req.accessToken as string);
+  const { error } = await supabase.auth.updateUser({ password: newPassword });
+  if (error) {
+    throw new HttpError(400, error.message);
+  }
+
+  res.status(204).send();
 }

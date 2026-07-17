@@ -3,10 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import bankaiMark from '../assets/bankai-mark.svg';
 import bankaiWordmark from '../assets/bankai-wordmark.svg';
 import { ApiError, signup } from '../lib/api';
+import { useCurrentUser } from '../lib/auth-context';
 import './AuthLayout.css';
 
 export default function SignUp() {
   const navigate = useNavigate();
+  const { setUser } = useCurrentUser();
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -26,6 +28,7 @@ export default function SignUp() {
         setNotice(result.message);
         return;
       }
+      setUser(result.user);
       navigate('/onboarding');
     } catch (err) {
       if (err instanceof ApiError) {
