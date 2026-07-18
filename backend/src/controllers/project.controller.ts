@@ -1,6 +1,10 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import type { Request, Response } from "express";
+import { randomUUID } from "node:crypto";
+import { decrypt } from "../lib/crypto.js";
 import { HttpError } from "../lib/http-error.js";
+import { deleteIssue, type JiraCredentials } from "../lib/jira.js";
+import { logger } from "../lib/logger.js";
 import { computeProjectStats } from "../lib/project-stats.js";
 import type { ProjectRole } from "../lib/roles.js";
 import { createUserScopedSupabaseClient } from "../lib/supabase.js";
@@ -112,37 +116,49 @@ export async function createProject(req: Request, res: Response): Promise<void> 
   const { name, description, services } = req.body as CreateProjectInput;
   const supabase = userScopedClient(req);
 
-  const { data: project, error: insertError } = await supabase
-    .from("projects")
-    .insert({
-      owner_id: req.user!.id,
-      name,
-      description: description || null,
-      key_prefix: deriveKeyPrefix(name),
-    })
-    .select(PROJECT_COLUMNS)
-    .single();
+  // Insert without chaining .select(): PostgREST would turn that into
+  // INSERT ... RETURNING, which re-checks the projects SELECT policy
+  // (project_role(id) is not null) against the row from *this same*
+  // statement — and project_role()'s own lookup into projects can't see
+  // that not-yet-committed row, so the RETURNING check spuriously fails
+  // with a row-level security violation even though the INSERT's own WITH
+  // CHECK passed. Generating the id here lets us fetch the row back in a
+  // separate request afterward, once it's committed and visible normally.
+  const projectId = randomUUID();
+  const { error: insertError } = await supabase.from("projects").insert({
+    id: projectId,
+    owner_id: req.user!.id,
+    name,
+    description: description || null,
+    key_prefix: deriveKeyPrefix(name),
+  });
 
-  if (insertError || !project) {
+  if (insertError) {
+    logger.error({ err: insertError, userId: req.user!.id }, "Could not create project");
     throw new HttpError(500, "Could not create project.");
   }
 
-  let serviceNames: string[] = [];
   if (services.length > 0) {
-    const { data: insertedServices, error: servicesError } = await supabase
+    const { error: servicesError } = await supabase
       .from("project_services")
-      .insert(services.map((serviceName) => ({ project_id: project.id, name: serviceName })))
-      .select("name");
+      .insert(services.map((serviceName) => ({ project_id: projectId, name: serviceName })));
 
     if (servicesError) {
       throw new HttpError(500, "Project created, but services could not be saved.");
     }
-    serviceNames = (insertedServices ?? []).map((s) => s.name);
   }
 
-  res.status(201).json({
-    project: await toPublicProject(supabase, { ...project, project_services: serviceNames.map((n) => ({ name: n })) }),
-  });
+  const { data: project, error: fetchError } = await supabase
+    .from("projects")
+    .select(`${PROJECT_COLUMNS}, project_services ( name )`)
+    .eq("id", projectId)
+    .single();
+
+  if (fetchError || !project) {
+    throw new HttpError(500, "Project created, but could not be loaded.");
+  }
+
+  res.status(201).json({ project: await toPublicProject(supabase, project as ProjectRow) });
 }
 
 // Owner-only, and requires typing the exact project name back — this is
@@ -159,7 +175,7 @@ export async function deleteProject(req: Request, res: Response): Promise<void> 
 
   const { data: project, error: fetchError } = await supabase
     .from("projects")
-    .select("id, name, owner_id")
+    .select("id, name, owner_id, jira_site, jira_email, jira_api_token_enc, jira_connected_at")
     .eq("id", req.params.id)
     .maybeSingle();
 
@@ -176,6 +192,23 @@ export async function deleteProject(req: Request, res: Response): Promise<void> 
     throw new HttpError(422, "Type the exact project name to confirm deletion.");
   }
 
+  // Gathered before the delete below (which cascades and removes these rows)
+  // so the linked Jira issues can still be cleaned up afterward.
+  const jiraCreds: JiraCredentials | null =
+    project.jira_connected_at && project.jira_site && project.jira_email && project.jira_api_token_enc
+      ? { site: project.jira_site, email: project.jira_email, apiToken: decrypt(project.jira_api_token_enc) }
+      : null;
+
+  let jiraIssueKeys: string[] = [];
+  if (jiraCreds) {
+    const { data: ticketRows } = await supabase
+      .from("tickets")
+      .select("jira_issue_key")
+      .eq("project_id", project.id)
+      .not("jira_issue_key", "is", null);
+    jiraIssueKeys = (ticketRows ?? []).map((t) => t.jira_issue_key as string);
+  }
+
   const { error, count } = await supabase.from("projects").delete({ count: "exact" }).eq("id", project.id);
 
   if (error) {
@@ -183,6 +216,17 @@ export async function deleteProject(req: Request, res: Response): Promise<void> 
   }
   if (!count) {
     throw new HttpError(404, "Project not found");
+  }
+
+  // Best-effort: the project is already gone from Bankai either way — a
+  // Jira outage or a since-deleted issue must not turn a successful project
+  // deletion into an error response.
+  if (jiraCreds && jiraIssueKeys.length > 0) {
+    const results = await Promise.allSettled(jiraIssueKeys.map((key) => deleteIssue(jiraCreds, key)));
+    const failed = results.filter((r) => r.status === "rejected" || !r.value).length;
+    if (failed > 0) {
+      logger.error({ projectId: project.id, failed, total: jiraIssueKeys.length }, "Could not delete some Jira issues for a deleted project");
+    }
   }
 
   res.status(204).send();

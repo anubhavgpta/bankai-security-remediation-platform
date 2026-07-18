@@ -237,6 +237,11 @@ export function planIngest(
   rows: NormalizedFinding[],
   now: Date,
   policyDays: SlaPolicyDays,
+  // Applied to rows whose CSV had no recognized service column. Only set
+  // when the project declares exactly one service — with more than one,
+  // there's no CSV data to say which one a given row belongs to, so it's
+  // left null ("Unassigned") rather than guessed.
+  defaultService: string | null = null,
 ): IngestPlan {
   const existingByFingerprint = new Map(existing.map((f) => [f.fingerprint, f]));
   const seenFingerprints = new Set<string>();
@@ -287,7 +292,7 @@ export function planIngest(
       description: row.description,
       fix_available: row.fixAvailable,
       source_url: row.sourceUrl,
-      service: row.service,
+      service: row.service ?? defaultService,
       bucket,
       confidence: computeConfidence(bucket, row),
       rationale,

@@ -98,12 +98,21 @@ export async function listFindings(req: Request, res: Response): Promise<void> {
 
 export async function updateFinding(req: Request, res: Response): Promise<void> {
   requireRole(req.project!.myRole, ["owner", "admin", "editor"]);
-  const { bucket } = req.body as UpdateFindingInput;
+  const { bucket, service } = req.body as UpdateFindingInput;
   const supabase = userScopedClient(req);
+
+  const update: Record<string, string> = {};
+  if (bucket) {
+    update.bucket = bucket;
+    update.rationale = `Manually reassigned to ${bucket}.`;
+  }
+  if (service) {
+    update.service = service;
+  }
 
   const { data, error } = await supabase
     .from("findings")
-    .update({ bucket, rationale: `Manually reassigned to ${bucket}.` })
+    .update(update)
     .eq("id", req.params.findingId)
     .eq("project_id", req.project!.id)
     .select(SELECT_FINDING)

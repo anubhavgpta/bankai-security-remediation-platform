@@ -8,7 +8,7 @@ import './StepDetail.css';
 const MAPPING = [
   { field: 'summary', from: 'service + finding.title', rule: 'Prefixed with service: "[Identity Apps] Upgrade OpenSSL…"' },
   { field: 'priority', from: 'finding.severity', rule: 'Critical → Highest · High → High · Medium → Medium · Low → Low' },
-  { field: 'description', from: 'finding.rationale + CVIT id', rule: 'Rendered as Atlassian Document Format' },
+  { field: 'description', from: 'id, title, severity, cvss_score, cwe, component, file_path, type, status, date_found, fix_available, source_url, description', rule: 'Full finding detail, rendered as Atlassian Document Format' },
   { field: 'duedate', from: 'finding.sla_due_date', rule: 'SLA deadline becomes the Jira due date' },
 ];
 
@@ -36,6 +36,7 @@ export default function JiraTicketsDetail() {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime())
     .slice(0, 5);
   const syncErrors = (tickets ?? []).filter((t) => t.jiraSyncError);
+  const branchErrors = (tickets ?? []).filter((t) => t.githubBranchError);
 
   return (
     <main className="ws-page ws-page--narrow">
@@ -98,6 +99,18 @@ export default function JiraTicketsDetail() {
                     {t.jiraIssueKey}
                   </a>
                   <span style={{ flex: 1, fontSize: 13, fontWeight: 600 }}>{t.title}</span>
+                  {t.githubBranchUrl && (
+                    <a
+                      href={t.githubBranchUrl}
+                      target="_blank"
+                      rel="noreferrer"
+                      className="ws-mono"
+                      style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}
+                      title={`Open branch ${t.githubBranchName}`}
+                    >
+                      {t.githubBranchName}
+                    </a>
+                  )}
                   <span className="ws-mono" style={{ fontSize: 11.5, color: 'var(--color-text-muted)' }}>{t.key}</span>
                 </div>
               ))}
@@ -106,6 +119,11 @@ export default function JiraTicketsDetail() {
           {syncErrors.length > 0 && (
             <div className="step-footnote" style={{ color: '#B91C1C' }}>
               {syncErrors.length} ticket(s) could not sync to Jira — see the Tickets board for details.
+            </div>
+          )}
+          {branchErrors.length > 0 && (
+            <div className="step-footnote" style={{ color: '#B91C1C' }}>
+              {branchErrors.length} ticket(s) could not get a remediation branch — see the Tickets board for details.
             </div>
           )}
         </div>

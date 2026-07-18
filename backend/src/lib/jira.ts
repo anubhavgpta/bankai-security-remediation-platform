@@ -68,6 +68,44 @@ const SEVERITY_TO_PRIORITY: Record<Severity, string> = {
   Low: "Low",
 };
 
+export interface FindingSummary {
+  id: string;
+  externalId: string | null;
+  title: string;
+  severity: Severity;
+  cvssScore: number | null;
+  cwe: string | null;
+  component: string | null;
+  filePath: string | null;
+  findingType: string | null;
+  sourceStatus: string | null;
+  dateFound: string | null;
+  description: string | null;
+  fixAvailable: string | null;
+  sourceUrl: string | null;
+}
+
+// Builds a self-contained issue description so the finding can be
+// remediated from the Jira ticket alone, without needing to cross-reference
+// Bankai — every column shown in the findings/AI Triage table is included.
+export function buildFindingDescription(f: FindingSummary): string {
+  return [
+    `ID: ${f.externalId ?? f.id}`,
+    `Title: ${f.title}`,
+    `Severity: ${f.severity}`,
+    `CVSS Score: ${f.cvssScore ?? "—"}`,
+    `CWE: ${f.cwe ?? "—"}`,
+    `Component: ${f.component ?? "—"}`,
+    `File Path: ${f.filePath ?? "—"}`,
+    `Type: ${f.findingType ?? "—"}`,
+    `Status: ${f.sourceStatus ?? "—"}`,
+    `Date Found: ${f.dateFound ?? "—"}`,
+    `Fix Available: ${f.fixAvailable ?? "—"}`,
+    `Source: ${f.sourceUrl ?? "—"}`,
+    `Description: ${f.description ?? "—"}`,
+  ].join("\n");
+}
+
 export interface CreateIssueInput {
   projectKey: string;
   title: string;
@@ -139,6 +177,63 @@ export async function addIssueToSprint(creds: JiraCredentials, sprintId: number,
       body: JSON.stringify({ issues: [issueKey] }),
     });
     return res.ok;
+  } catch {
+    return false;
+  }
+}
+
+export interface BranchCommentResult {
+  ok: boolean;
+  status?: number | undefined;
+  message?: string | undefined;
+}
+
+// Never throws — same best-effort contract as addIssueToSprint. Posts a
+// comment linking the remediation branch so it's visible from the Jira
+// ticket itself, not just Bankai. Returns the failure reason (rather than a
+// plain boolean) so callers can log why, instead of a silent no-op.
+export async function addBranchComment(
+  creds: JiraCredentials,
+  issueKey: string,
+  branch: { name: string; url: string },
+): Promise<BranchCommentResult> {
+  try {
+    const res = await jiraFetch(creds, `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+      method: "POST",
+      body: JSON.stringify({
+        body: {
+          type: "doc",
+          version: 1,
+          content: [
+            {
+              type: "paragraph",
+              content: [
+                { type: "text", text: "Remediation branch created: " },
+                { type: "text", text: branch.name, marks: [{ type: "link", attrs: { href: branch.url } }] },
+              ],
+            },
+          ],
+        },
+      }),
+    });
+    if (res.ok) return { ok: true };
+
+    const body = (await res.json().catch(() => ({}))) as { errorMessages?: string[]; errors?: Record<string, unknown> };
+    const reason =
+      body.errorMessages?.[0] ?? (body.errors && typeof body.errors === "object" ? Object.values(body.errors)[0] : undefined);
+    return { ok: false, status: res.status, message: typeof reason === "string" ? reason : undefined };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Never throws — same best-effort contract as addBranchComment. A 404 counts
+// as success (the issue is already gone either way), so callers cleaning up
+// a batch of issues don't need to special-case ones deleted directly in Jira.
+export async function deleteIssue(creds: JiraCredentials, issueKey: string): Promise<boolean> {
+  try {
+    const res = await jiraFetch(creds, `/rest/api/3/issue/${encodeURIComponent(issueKey)}`, { method: "DELETE" });
+    return res.ok || res.status === 404;
   } catch {
     return false;
   }

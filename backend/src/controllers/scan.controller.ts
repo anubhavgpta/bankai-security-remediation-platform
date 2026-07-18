@@ -104,7 +104,18 @@ export async function uploadScan(req: Request, res: Response): Promise<void> {
     bucket: f.bucket,
   }));
 
-  const plan = planIngest(project.id, scan.id, existing, rows, new Date(), project.slaPolicyDays);
+  const { data: projectServices, error: servicesError } = await supabase
+    .from("project_services")
+    .select("name")
+    .eq("project_id", project.id);
+
+  if (servicesError) {
+    throw new HttpError(500, "Could not load this project's services.");
+  }
+
+  const defaultService = projectServices?.length === 1 ? (projectServices[0]?.name ?? null) : null;
+
+  const plan = planIngest(project.id, scan.id, existing, rows, new Date(), project.slaPolicyDays, defaultService);
 
   if (plan.upsertRows.length > 0) {
     const { error: upsertError } = await supabase

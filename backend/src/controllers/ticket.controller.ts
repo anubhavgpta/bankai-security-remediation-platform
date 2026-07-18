@@ -1,8 +1,19 @@
 import type { Request, Response } from "express";
 import { recordActivity } from "../lib/activity.js";
 import { decrypt } from "../lib/crypto.js";
+import { buildBranchName, createBranch, GithubApiError, type GithubCredentials } from "../lib/github.js";
 import { HttpError } from "../lib/http-error.js";
-import { addIssueToSprint, createIssue, getActiveSprintId, getIssueSnapshot, JiraApiError, transitionIssue, type JiraCredentials } from "../lib/jira.js";
+import {
+  addBranchComment,
+  addIssueToSprint,
+  buildFindingDescription,
+  createIssue,
+  getActiveSprintId,
+  getIssueSnapshot,
+  JiraApiError,
+  transitionIssue,
+  type JiraCredentials,
+} from "../lib/jira.js";
 import { logger } from "../lib/logger.js";
 import { requireRole } from "../lib/roles.js";
 import { createUserScopedSupabaseClient } from "../lib/supabase.js";
@@ -27,6 +38,9 @@ interface TicketRow {
   jira_issue_key: string | null;
   jira_issue_url: string | null;
   jira_sync_error: string | null;
+  github_branch_name: string | null;
+  github_branch_url: string | null;
+  github_branch_error: string | null;
   // Only present when selected via SELECT_TICKET's join — absent on rows
   // returned directly from the create_project_ticket RPC.
   findings?: { external_id: string | null } | { external_id: string | null }[] | null;
@@ -49,12 +63,15 @@ function toPublicTicket(row: TicketRow) {
     jiraIssueKey: row.jira_issue_key ?? null,
     jiraIssueUrl: row.jira_issue_url ?? null,
     jiraSyncError: row.jira_sync_error ?? null,
+    githubBranchName: row.github_branch_name ?? null,
+    githubBranchUrl: row.github_branch_url ?? null,
+    githubBranchError: row.github_branch_error ?? null,
     createdAt: row.created_at,
   };
 }
 
 const SELECT_TICKET =
-  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, findings ( external_id )";
+  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, findings ( external_id )";
 
 interface ProjectJiraRow {
   jira_site: string | null;
@@ -85,6 +102,69 @@ async function loadJiraCreds(
   };
 }
 
+interface ProjectGithubRow {
+  github_repo: string | null;
+  github_token_enc: string | null;
+  github_default_branch: string | null;
+  github_connected_at: string | null;
+}
+
+async function loadGithubCreds(
+  supabase: ReturnType<typeof createUserScopedSupabaseClient>,
+  projectId: string,
+): Promise<{ creds: GithubCredentials; defaultBranch: string } | null> {
+  const { data } = await supabase
+    .from("projects")
+    .select("github_repo, github_token_enc, github_default_branch, github_connected_at")
+    .eq("id", projectId)
+    .single();
+
+  const row = data as ProjectGithubRow | null;
+  if (!row?.github_connected_at || !row.github_repo || !row.github_token_enc || !row.github_default_branch) {
+    return null;
+  }
+
+  return {
+    creds: { repo: row.github_repo, token: decrypt(row.github_token_enc) },
+    defaultBranch: row.github_default_branch,
+  };
+}
+
+// Best-effort, same contract as Jira issue creation: a remediation branch is
+// a convenience, not something that should fail ticket creation/sync if
+// GitHub is unreachable or misconfigured. Returns the columns to fold into
+// the caller's own `tickets` update — never throws. On success, also posts a
+// best-effort comment on the linked Jira issue so the branch is visible from
+// Jira itself, not just Bankai.
+async function attemptBranchCreation(
+  github: { creds: GithubCredentials; defaultBranch: string } | null,
+  jiraCreds: JiraCredentials,
+  issueKey: string,
+  ticketKey: string,
+  title: string,
+  ticketId: string,
+): Promise<{ github_branch_name: string | null; github_branch_url: string | null; github_branch_error: string | null } | null> {
+  if (!github) return null;
+  try {
+    const name = buildBranchName(ticketKey, title);
+    const branch = await createBranch(github.creds, { baseBranch: github.defaultBranch, branchName: name });
+
+    const comment = await addBranchComment(jiraCreds, issueKey, branch);
+    if (!comment.ok) {
+      logger.error(
+        { ticketId, issueKey, status: comment.status, message: comment.message },
+        "Could not post the remediation branch link as a Jira comment",
+      );
+    }
+
+    return { github_branch_name: branch.name, github_branch_url: branch.url, github_branch_error: null };
+  } catch (err) {
+    const message = err instanceof GithubApiError ? err.message : "Could not create a remediation branch.";
+    logger.error({ err, ticketId }, "GitHub branch creation failed");
+    return { github_branch_name: null, github_branch_url: null, github_branch_error: message };
+  }
+}
+
 export async function listTickets(req: Request, res: Response): Promise<void> {
   const supabase = userScopedClient(req);
   let query = supabase.from("tickets").select(SELECT_TICKET).eq("project_id", req.project!.id);
@@ -110,7 +190,9 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
 
   const { data: findings, error: findingsError } = await supabase
     .from("findings")
-    .select("id, title, service, severity, sla_due_date, external_id, rationale, tickets ( id )")
+    .select(
+      "id, title, service, severity, sla_due_date, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url, tickets ( id )",
+    )
     .eq("project_id", project.id)
     .in("id", findingIds);
 
@@ -120,6 +202,7 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
 
   const jira = await loadJiraCreds(supabase, project.id);
   const activeSprintId = jira ? await getActiveSprintId(jira.creds, jira.projectKey) : null;
+  const github = await loadGithubCreds(supabase, project.id);
 
   const created: ReturnType<typeof toPublicTicket>[] = [];
   const skipped: string[] = [];
@@ -158,12 +241,22 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
     if (jira) {
       try {
         const summary = `[${finding.service ?? "Unassigned"}] ${finding.title}`;
-        const description = [
-          finding.rationale ?? "",
-          finding.external_id ? `CVIT: ${finding.external_id}` : "",
-        ]
-          .filter(Boolean)
-          .join("\n");
+        const description = buildFindingDescription({
+          id: finding.id,
+          externalId: finding.external_id,
+          title: finding.title,
+          severity: finding.severity as Severity,
+          cvssScore: finding.cvss_score,
+          cwe: finding.cwe,
+          component: finding.component,
+          filePath: finding.file_path,
+          findingType: finding.finding_type,
+          sourceStatus: finding.source_status,
+          dateFound: finding.date_found,
+          description: finding.description ?? finding.rationale,
+          fixAvailable: finding.fix_available,
+          sourceUrl: finding.source_url,
+        });
 
         const issue = await createIssue(jira.creds, {
           projectKey: jira.projectKey,
@@ -176,9 +269,16 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
           void addIssueToSprint(jira.creds, activeSprintId, issue.key);
         }
 
+        const branchColumns = await attemptBranchCreation(github, jira.creds, issue.key, ticketRow.key, finding.title, ticketRow.id);
+
         const { data: updated } = await supabase
           .from("tickets")
-          .update({ jira_issue_key: issue.key, jira_issue_url: issue.url, jira_sync_error: null })
+          .update({
+            jira_issue_key: issue.key,
+            jira_issue_url: issue.url,
+            jira_sync_error: null,
+            ...(branchColumns ?? {}),
+          })
           .eq("id", ticketRow.id)
           .select(SELECT_TICKET)
           .single();
@@ -236,10 +336,13 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
     throw new HttpError(422, "Connect Jira in Settings before syncing tickets.");
   }
   const activeSprintId = await getActiveSprintId(jira.creds, jira.projectKey);
+  const github = await loadGithubCreds(supabase, project.id);
 
   const { data: rows, error } = await supabase
     .from("tickets")
-    .select("id, key, title, service, severity, status, due_date, jira_issue_key, findings ( external_id, rationale )")
+    .select(
+      "id, key, title, service, severity, status, due_date, jira_issue_key, github_branch_name, finding_id, findings ( external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url )",
+    )
     .eq("project_id", project.id);
 
   if (error) {
@@ -256,9 +359,17 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
     if (row.jira_issue_key) {
       const snapshot = await getIssueSnapshot(jira.creds, row.jira_issue_key);
       if (snapshot.exists) {
-        if (snapshot.status && snapshot.status !== row.status) {
-          await supabase.from("tickets").update({ status: snapshot.status }).eq("id", row.id);
-          statusPulled++;
+        const statusColumns =
+          snapshot.status && snapshot.status !== row.status ? { status: snapshot.status } : null;
+        const branchColumns = !row.github_branch_name
+          ? await attemptBranchCreation(github, jira.creds, row.jira_issue_key, row.key, row.title, row.id)
+          : null;
+        if (statusColumns) statusPulled++;
+        if (statusColumns || branchColumns) {
+          await supabase
+            .from("tickets")
+            .update({ ...statusColumns, ...branchColumns })
+            .eq("id", row.id);
         }
         continue;
       }
@@ -289,9 +400,22 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
 
     const findingRel = Array.isArray(row.findings) ? row.findings[0] : row.findings;
     const summary = `[${row.service ?? "Unassigned"}] ${row.title}`;
-    const description = [findingRel?.rationale ?? "", findingRel?.external_id ? `CVIT: ${findingRel.external_id}` : ""]
-      .filter(Boolean)
-      .join("\n");
+    const description = buildFindingDescription({
+      id: row.finding_id,
+      externalId: findingRel?.external_id ?? null,
+      title: row.title,
+      severity: row.severity as Severity,
+      cvssScore: findingRel?.cvss_score ?? null,
+      cwe: findingRel?.cwe ?? null,
+      component: findingRel?.component ?? null,
+      filePath: findingRel?.file_path ?? null,
+      findingType: findingRel?.finding_type ?? null,
+      sourceStatus: findingRel?.source_status ?? null,
+      dateFound: findingRel?.date_found ?? null,
+      description: findingRel?.description ?? findingRel?.rationale ?? null,
+      fixAvailable: findingRel?.fix_available ?? null,
+      sourceUrl: findingRel?.source_url ?? null,
+    });
 
     try {
       const issue = await createIssue(jira.creds, {
@@ -304,9 +428,15 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
       if (activeSprintId) {
         void addIssueToSprint(jira.creds, activeSprintId, issue.key);
       }
+      const branchColumns = await attemptBranchCreation(github, jira.creds, issue.key, row.key, row.title, row.id);
       await supabase
         .from("tickets")
-        .update({ jira_issue_key: issue.key, jira_issue_url: issue.url, jira_sync_error: null })
+        .update({
+          jira_issue_key: issue.key,
+          jira_issue_url: issue.url,
+          jira_sync_error: null,
+          ...(branchColumns ?? {}),
+        })
         .eq("id", row.id);
       synced++;
     } catch (err) {

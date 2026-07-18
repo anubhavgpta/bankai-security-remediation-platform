@@ -156,6 +156,32 @@ export function disconnectJira(projectId: string): Promise<JiraConnection> {
 }
 
 // ---------------------------------------------------------------------
+// GitHub connection
+// ---------------------------------------------------------------------
+
+export interface GithubConnection {
+  connected: boolean;
+  repo: string | null;
+  defaultBranch: string | null;
+  connectedAt: string | null;
+}
+
+export function getGithubConnection(projectId: string): Promise<GithubConnection> {
+  return apiFetch(`/projects/${projectId}/github`, { method: "GET" });
+}
+
+export function connectGithub(
+  projectId: string,
+  input: { repo: string; token: string; baseBranch?: string },
+): Promise<GithubConnection> {
+  return apiFetch(`/projects/${projectId}/github/connect`, { method: "POST", body: JSON.stringify(input) });
+}
+
+export function disconnectGithub(projectId: string): Promise<GithubConnection> {
+  return apiFetch(`/projects/${projectId}/github/disconnect`, { method: "POST" });
+}
+
+// ---------------------------------------------------------------------
 // SLA policy
 // ---------------------------------------------------------------------
 
@@ -248,6 +274,10 @@ export function reassignFindingBucket(projectId: string, findingId: string, buck
   return apiFetch(`/projects/${projectId}/findings/${findingId}`, { method: "PATCH", body: JSON.stringify({ bucket }) });
 }
 
+export function reassignFindingService(projectId: string, findingId: string, service: string): Promise<{ finding: Finding }> {
+  return apiFetch(`/projects/${projectId}/findings/${findingId}`, { method: "PATCH", body: JSON.stringify({ service }) });
+}
+
 // ---------------------------------------------------------------------
 // Tickets
 // ---------------------------------------------------------------------
@@ -268,6 +298,9 @@ export interface Ticket {
   jiraIssueKey: string | null;
   jiraIssueUrl: string | null;
   jiraSyncError: string | null;
+  githubBranchName: string | null;
+  githubBranchUrl: string | null;
+  githubBranchError: string | null;
   createdAt: string;
 }
 

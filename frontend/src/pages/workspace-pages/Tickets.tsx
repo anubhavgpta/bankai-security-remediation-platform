@@ -199,6 +199,25 @@ export default function Tickets() {
                           {t.jiraSyncError && (
                             <span style={{ color: '#B91C1C' }} title={t.jiraSyncError}> · Jira sync failed</span>
                           )}
+                          {t.githubBranchUrl && (
+                            <>
+                              {' · '}
+                              <a
+                                href={t.githubBranchUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ws-mono"
+                                style={{ color: 'var(--color-text-muted)' }}
+                                onClick={(e) => e.stopPropagation()}
+                                title={`Open branch ${t.githubBranchName}`}
+                              >
+                                {t.githubBranchName}
+                              </a>
+                            </>
+                          )}
+                          {t.githubBranchError && (
+                            <span style={{ color: '#B91C1C' }} title={t.githubBranchError}> · Branch creation failed</span>
+                          )}
                         </div>
                         <div className="tickets-kanban-card-footer">
                           <span className="tickets-kanban-card-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
@@ -234,6 +253,22 @@ export default function Tickets() {
                       {t.title}
                       {t.jiraSyncError && (
                         <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.jiraSyncError}> · Jira sync failed</span>
+                      )}
+                      {t.githubBranchUrl && (
+                        <a
+                          href={t.githubBranchUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="ws-mono"
+                          style={{ color: 'var(--color-text-muted)', fontSize: 11 }}
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open branch ${t.githubBranchName}`}
+                        >
+                          {' · '}{t.githubBranchName}
+                        </a>
+                      )}
+                      {t.githubBranchError && (
+                        <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.githubBranchError}> · Branch creation failed</span>
                       )}
                     </span>
                     <span className="tickets-table-service">{t.service}</span>

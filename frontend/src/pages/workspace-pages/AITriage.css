@@ -296,7 +296,12 @@
 
 .triage-drawer-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 10px;
   padding: 16px 22px;
   border-top: 1px solid var(--color-divider);
+}
+
+.triage-drawer-actions > * {
+  min-width: 120px;
 }

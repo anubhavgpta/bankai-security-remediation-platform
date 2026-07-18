@@ -5,6 +5,7 @@ import {
   createTickets,
   listFindings,
   reassignFindingBucket,
+  reassignFindingService,
   type Bucket,
   type Finding,
   type Severity,
@@ -56,6 +57,9 @@ export default function AITriage() {
   const [sortKey, setSortKey] = useState<'severity' | 'confidence' | null>(null);
   const [sortDir, setSortDir] = useState<1 | -1>(-1);
   const [reassigning, setReassigning] = useState(false);
+  const [reassigningService, setReassigningService] = useState(false);
+  const [customServiceMode, setCustomServiceMode] = useState(false);
+  const [customService, setCustomService] = useState('');
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
@@ -77,6 +81,12 @@ export default function AITriage() {
     () => Array.from(new Set((findings ?? []).map((f) => f.service))).sort(),
     [findings],
   );
+
+  // The project's own declared services (set up in New Project / Settings)
+  // — this is the taxonomy findings actually get tagged into, distinct from
+  // `services` above which is just whatever values already showed up in the
+  // ingested findings (including "Unassigned").
+  const projectServices = project?.services ?? [];
 
   const filtered = useMemo(() => {
     let list = (findings ?? []).filter(
@@ -122,6 +132,23 @@ export default function AITriage() {
       const { finding } = await reassignFindingBucket(project.id, openRow.id, bucket);
       updateLocalFinding(finding);
       setReassigning(false);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Could not reassign this finding.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const handleReassignService = async (service: string) => {
+    if (!project || !openRow || !service.trim()) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      const { finding } = await reassignFindingService(project.id, openRow.id, service.trim());
+      updateLocalFinding(finding);
+      setReassigningService(false);
+      setCustomServiceMode(false);
+      setCustomService('');
     } catch (err) {
       setActionError(err instanceof ApiError ? err.message : 'Could not reassign this finding.');
     } finally {
@@ -250,6 +277,9 @@ export default function AITriage() {
                 onClick={() => {
                   setOpenId(r.id);
                   setReassigning(false);
+                  setReassigningService(false);
+                  setCustomServiceMode(false);
+                  setCustomService('');
                 }}
               >
                 <span
@@ -356,6 +386,45 @@ export default function AITriage() {
                   <option value="" disabled>Reassign to…</option>
                   {BUCKETS.filter((b) => b !== openRow.bucket).map((b) => <option key={b} value={b}>{b}</option>)}
                 </select>
+              ) : reassigningService && customServiceMode ? (
+                <form
+                  style={{ display: 'flex', flex: 1, gap: 8 }}
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void handleReassignService(customService);
+                  }}
+                >
+                  <input
+                    type="text"
+                    className="ws-select"
+                    style={{ flex: 1 }}
+                    autoFocus
+                    disabled={busy}
+                    placeholder="Service name…"
+                    value={customService}
+                    onChange={(e) => setCustomService(e.target.value)}
+                  />
+                  <button type="submit" className="ws-btn ws-btn-secondary" disabled={busy || !customService.trim()}>
+                    Save
+                  </button>
+                </form>
+              ) : reassigningService ? (
+                <select
+                  className="ws-select"
+                  style={{ flex: 1 }}
+                  autoFocus
+                  disabled={busy}
+                  defaultValue=""
+                  onChange={(e) => {
+                    if (e.target.value === '__custom__') setCustomServiceMode(true);
+                    else if (e.target.value) void handleReassignService(e.target.value);
+                  }}
+                  onBlur={() => setReassigningService(false)}
+                >
+                  <option value="" disabled>Reassign service to…</option>
+                  {projectServices.filter((s) => s !== openRow.service).map((s) => <option key={s} value={s}>{s}</option>)}
+                  <option value="__custom__">Custom…</option>
+                </select>
               ) : (
                 <>
                   <button className="ws-btn ws-btn-success" style={{ flex: 1 }} onClick={() => setOpenId(null)}>Accept</button>
@@ -367,6 +436,15 @@ export default function AITriage() {
                     onClick={() => setReassigning(true)}
                   >
                     Reassign bucket
+                  </button>
+                  <button
+                    className="ws-btn ws-btn-secondary"
+                    style={{ flex: 1 }}
+                    disabled={!canEdit(project?.myRole)}
+                    title={!canEdit(project?.myRole) ? 'Your role does not allow reassigning findings.' : undefined}
+                    onClick={() => setReassigningService(true)}
+                  >
+                    Reassign service
                   </button>
                   <button
                     className="ws-btn ws-btn-outline-blue"

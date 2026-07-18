@@ -3,9 +3,12 @@ import { Link, useNavigate } from 'react-router-dom';
 import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
 import {
   ApiError,
+  connectGithub,
   connectJira,
   deleteProject,
+  disconnectGithub,
   disconnectJira,
+  getGithubConnection,
   getJiraConnection,
   inviteMember,
   listMembers,
@@ -13,6 +16,7 @@ import {
   revokeInvite,
   updateMemberRole,
   updateSlaPolicy,
+  type GithubConnection,
   type JiraConnection,
   type MemberRole,
   type PendingProjectInvite,
@@ -100,12 +104,27 @@ export default function Settings() {
   const [apiToken, setApiToken] = useState('');
   const [projectKey, setProjectKey] = useState('');
 
+  const [github, setGithub] = useState<GithubConnection | null>(null);
+  const [githubLoading, setGithubLoading] = useState(false);
+  const [githubError, setGithubError] = useState<string | null>(null);
+  const [githubFieldErrors, setGithubFieldErrors] = useState<Record<string, string>>({});
+  const [repo, setRepo] = useState('');
+  const [token, setToken] = useState('');
+  const [baseBranch, setBaseBranch] = useState('');
+
   useEffect(() => {
     if (!project) return;
     let cancelled = false;
-    getJiraConnection(project.id).then((conn) => {
-      if (!cancelled) setJira(conn);
-    });
+    getJiraConnection(project.id)
+      .then((conn) => {
+        if (!cancelled) setJira(conn);
+      })
+      .catch(() => {});
+    getGithubConnection(project.id)
+      .then((conn) => {
+        if (!cancelled) setGithub(conn);
+      })
+      .catch(() => {});
     return () => {
       cancelled = true;
     };
@@ -209,6 +228,42 @@ export default function Settings() {
       setJira(conn);
     } finally {
       setJiraLoading(false);
+    }
+  };
+
+  const handleConnectGithub = async (e: FormEvent) => {
+    e.preventDefault();
+    if (!project) return;
+    setGithubError(null);
+    setGithubFieldErrors({});
+    setGithubLoading(true);
+    try {
+      const conn = await connectGithub(project.id, { repo, token, baseBranch: baseBranch || undefined });
+      setGithub(conn);
+      setRepo('');
+      setToken('');
+      setBaseBranch('');
+    } catch (err) {
+      if (err instanceof ApiError && err.fieldErrors?.length) {
+        setGithubFieldErrors(Object.fromEntries(err.fieldErrors.map((f) => [f.path, f.message])));
+      } else if (err instanceof ApiError) {
+        setGithubError(err.message);
+      } else {
+        setGithubError('Something went wrong. Please try again.');
+      }
+    } finally {
+      setGithubLoading(false);
+    }
+  };
+
+  const handleDisconnectGithub = async () => {
+    if (!project) return;
+    setGithubLoading(true);
+    try {
+      const conn = await disconnectGithub(project.id);
+      setGithub(conn);
+    } finally {
+      setGithubLoading(false);
     }
   };
 
@@ -377,6 +432,101 @@ export default function Settings() {
             <div className="settings-jira-actions">
               <button type="submit" className="ws-btn ws-btn-primary" disabled={jiraLoading}>
                 {jiraLoading ? 'Connecting…' : 'Connect'}
+              </button>
+            </div>
+          </form>
+        )}
+      </section>
+
+      <section className="ws-card settings-section">
+        <div className="settings-section-header">
+          <div>
+            <div className="ws-card-eyebrow">Integration</div>
+            <h2 className="settings-h2">GitHub</h2>
+          </div>
+          {github && (
+            <span className="ws-dot-status" style={{ color: github.connected ? '#15803D' : '#B91C1C' }}>
+              <span className="ws-dot" style={{ background: github.connected ? '#22C55E' : '#EF4444' }} />
+              {github.connected ? 'Connected' : 'Disconnected'}
+            </span>
+          )}
+        </div>
+
+        {github?.connected ? (
+          <>
+            <div className="settings-jira-grid">
+              <div>
+                <div className="settings-field-label">Repository</div>
+                <div className="settings-field-value ws-mono">{github.repo}</div>
+              </div>
+              <div>
+                <div className="settings-field-label">Base branch</div>
+                <div className="settings-field-value ws-mono">{github.defaultBranch}</div>
+              </div>
+            </div>
+            <div className="settings-jira-actions">
+              {project && canManageProject(project.myRole) && (
+                <button className="ws-btn ws-btn-danger-outline" onClick={handleDisconnectGithub} disabled={githubLoading}>
+                  Disconnect
+                </button>
+              )}
+              {github.connectedAt && (
+                <span className="settings-jira-synced">Connected since {formatConnectedAt(github.connectedAt)}</span>
+              )}
+            </div>
+          </>
+        ) : project && !canManageProject(project.myRole) ? (
+          <div className="ws-card-hint">Only admins can connect GitHub for this project.</div>
+        ) : (
+          <form onSubmit={handleConnectGithub}>
+            {githubError && <div className="settings-jira-error" role="alert">{githubError}</div>}
+            <div className="ws-card-hint" style={{ marginBottom: 16 }}>
+              Connect a repository so Bankai can open a remediation branch off its default branch whenever a Jira
+              ticket is created. Generate a{' '}
+              <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noreferrer">personal access token</a>{' '}
+              with contents read/write access to the repo.
+            </div>
+            <div className="settings-jira-grid">
+              <div className="settings-jira-field">
+                <label htmlFor="github-repo" className="settings-field-label">Repository</label>
+                <input
+                  id="github-repo"
+                  className="settings-jira-input"
+                  placeholder="owner/repo"
+                  value={repo}
+                  onChange={(e) => setRepo(e.target.value)}
+                  required
+                />
+                {githubFieldErrors.repo && <div className="settings-jira-field-error">{githubFieldErrors.repo}</div>}
+              </div>
+              <div className="settings-jira-field">
+                <label htmlFor="github-base-branch" className="settings-field-label">Base branch (optional)</label>
+                <input
+                  id="github-base-branch"
+                  className="settings-jira-input"
+                  placeholder="main"
+                  value={baseBranch}
+                  onChange={(e) => setBaseBranch(e.target.value)}
+                />
+                {githubFieldErrors.baseBranch && <div className="settings-jira-field-error">{githubFieldErrors.baseBranch}</div>}
+              </div>
+              <div className="settings-jira-field">
+                <label htmlFor="github-token" className="settings-field-label">Personal access token</label>
+                <input
+                  id="github-token"
+                  type="password"
+                  className="settings-jira-input"
+                  placeholder="Paste your GitHub token"
+                  value={token}
+                  onChange={(e) => setToken(e.target.value)}
+                  required
+                />
+                {githubFieldErrors.token && <div className="settings-jira-field-error">{githubFieldErrors.token}</div>}
+              </div>
+            </div>
+            <div className="settings-jira-actions">
+              <button type="submit" className="ws-btn ws-btn-primary" disabled={githubLoading}>
+                {githubLoading ? 'Connecting…' : 'Connect'}
               </button>
             </div>
           </form>
