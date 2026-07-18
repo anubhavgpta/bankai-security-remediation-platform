@@ -47,14 +47,3 @@ SUPABASE_URL=... SUPABASE_ANON_KEY=... SUPABASE_SERVICE_ROLE_KEY=... ARCJET_KEY=
   docker compose up --build
 # frontend (and /api, reverse-proxied to the backend) at http://localhost:8080
 ```
-
-## Status
-
-The frontend currently implements: Login, Sign Up, Projects, New Project (full), and a
-persistent Workspace shell (sidebar + routing) with placeholder pages for Remediation
-Workflow, Overview, Report Intake, AI Triage, Tickets, Activity, and Settings.
-
-The backend implements sign up / sign in / sign out / session refresh against Supabase
-Auth, protected by Arcjet (bot detection, rate limiting, email validation, WAF) — see
-[backend/README.md](backend/README.md) for details. Everything past auth (projects,
-scan ingestion, triage, tickets) is still local frontend component state.
