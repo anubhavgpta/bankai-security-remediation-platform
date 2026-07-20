@@ -32,3 +32,27 @@ export async function enqueueRepoScan(data: RepoScanJobData, jobId: string): Pro
     removeOnFail: { age: 7 * 24 * 60 * 60 },
   });
 }
+
+export interface FixPrJobData {
+  ticketId: string;
+  projectId: string;
+}
+
+export const FIX_PR_QUEUE_NAME = "fix-pr";
+
+export const fixPrQueue = new Queue<FixPrJobData>(FIX_PR_QUEUE_NAME, { connection: redisConnection });
+
+// jobId dedupes on ticketId — a burst of calls that all create/retry the
+// same ticket's branch (createTicketForFinding followed by a syncTickets
+// retry, say) collapses to one job. This is a belt-and-suspenders
+// optimization, not the real idempotency guard: processFixPrJob re-checks
+// the ticket's own state (status, github_pr_number, github_fix_commit_sha)
+// on every run, so it stays safe even if two jobs for the same ticket land
+// outside BullMQ's dedup window.
+export async function enqueueFixPr(data: FixPrJobData): Promise<void> {
+  await fixPrQueue.add("fix-pr", data, {
+    jobId: `fix-pr-${data.ticketId}`,
+    removeOnComplete: { age: 24 * 60 * 60 },
+    removeOnFail: { age: 7 * 24 * 60 * 60 },
+  });
+}

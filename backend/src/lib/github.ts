@@ -154,7 +154,7 @@ export async function registerWebhook(creds: GithubCredentials, input: { url: st
     body: JSON.stringify({
       name: "web",
       active: true,
-      events: ["push"],
+      events: ["push", "pull_request"],
       config: { url: input.url, content_type: "json", secret: input.secret, insecure_ssl: "0" },
     }),
   });
@@ -177,6 +177,21 @@ export async function deleteWebhook(creds: GithubCredentials, hookId: string): P
   const res = await githubFetch(creds, `/repos/${creds.repo}/hooks/${encodeURIComponent(hookId)}`, { method: "DELETE" });
   if (!res.ok && res.status !== 404) {
     throw new GithubApiError(`Could not remove the webhook (status ${res.status}).`, res.status);
+  }
+}
+
+// One-off use only, from backend/scripts/backfill-pr-webhooks.ts — updates
+// an already-registered webhook's subscribed events (e.g. adding
+// "pull_request" to hooks that were registered back when registerWebhook
+// only requested "push"). Best-effort, same contract as registerWebhook.
+export async function updateWebhookEvents(creds: GithubCredentials, hookId: string, events: string[]): Promise<void> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/hooks/${encodeURIComponent(hookId)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ events }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new GithubApiError(body.message ?? `Could not update the webhook (status ${res.status}).`, res.status);
   }
 }
 
@@ -294,3 +309,186 @@ export async function createBranch(
   const body = (await createRes.json().catch(() => ({}))) as { message?: string };
   throw new GithubApiError(body.message ?? `Branch creation failed (status ${createRes.status}).`, createRes.status);
 }
+
+// --- Git Data API: committing an AI-generated fix onto an existing branch ---
+// No Contents API here on purpose — commitFileToBranch below needs a single
+// commit built from an explicit parent sha (so updateBranchRef's force:false
+// fast-forward check means something), which the Git Data API's
+// tree/commit/ref primitives give directly; the Contents API's "one PUT per
+// file" shape doesn't expose that control.
+
+export async function getCommit(creds: GithubCredentials, sha: string): Promise<{ treeSha: string }> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/git/commits/${sha}`);
+  if (!res.ok) {
+    throw new GithubApiError(`Could not read commit ${sha} (status ${res.status}).`, res.status);
+  }
+  const body = (await res.json()) as { tree: { sha: string } };
+  return { treeSha: body.tree.sha };
+}
+
+export interface TreeContentEntry {
+  path: string;
+  content: string;
+}
+
+// Inline `content` on each tree entry — GitHub creates the underlying blob
+// itself, so this is one call instead of "create a blob per file, then
+// create a tree referencing their shas".
+export async function createTree(
+  creds: GithubCredentials,
+  baseTreeSha: string,
+  entries: TreeContentEntry[],
+): Promise<string> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/git/trees`, {
+    method: "POST",
+    body: JSON.stringify({
+      base_tree: baseTreeSha,
+      tree: entries.map((e) => ({ path: e.path, mode: "100644", type: "blob", content: e.content })),
+    }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new GithubApiError(body.message ?? `Could not create a tree (status ${res.status}).`, res.status);
+  }
+  const body = (await res.json()) as { sha: string };
+  return body.sha;
+}
+
+export async function createCommit(
+  creds: GithubCredentials,
+  input: { message: string; treeSha: string; parentSha: string },
+): Promise<string> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/git/commits`, {
+    method: "POST",
+    body: JSON.stringify({ message: input.message, tree: input.treeSha, parents: [input.parentSha] }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new GithubApiError(body.message ?? `Could not create a commit (status ${res.status}).`, res.status);
+  }
+  const body = (await res.json()) as { sha: string };
+  return body.sha;
+}
+
+// force:false is deliberate: if the branch has moved since `sha`'s parent
+// was read (e.g. a human pushed a commit in the race window between the
+// fix-pr job reading the branch head and committing), this update is not a
+// fast-forward and GitHub responds 422 — surfaced as GithubApiError so the
+// caller records it as a failure instead of silently overwriting the
+// human's commit.
+export async function updateBranchRef(creds: GithubCredentials, branch: string, sha: string): Promise<void> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/git/refs/heads/${branch}`, {
+    method: "PATCH",
+    body: JSON.stringify({ sha, force: false }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new GithubApiError(body.message ?? `Could not update branch "${branch}" (status ${res.status}).`, res.status);
+  }
+}
+
+export interface CommittedFix {
+  commitSha: string;
+}
+
+// Composes the four Git Data API calls above into one commit that changes a
+// single file. Not idempotent by itself — callers that may re-run (the
+// fix-pr job) are expected to check ticket.github_fix_commit_sha against the
+// branch's current head sha first and skip this call entirely if a fix was
+// already committed.
+export async function commitFileToBranch(
+  creds: GithubCredentials,
+  input: { branch: string; baseSha: string; message: string; path: string; content: string },
+): Promise<CommittedFix> {
+  const { treeSha: baseTreeSha } = await getCommit(creds, input.baseSha);
+  const treeSha = await createTree(creds, baseTreeSha, [{ path: input.path, content: input.content }]);
+  const commitSha = await createCommit(creds, { message: input.message, treeSha, parentSha: input.baseSha });
+  await updateBranchRef(creds, input.branch, commitSha);
+  return { commitSha };
+}
+
+export interface CreatedPullRequest {
+  number: number;
+  url: string;
+  state: "open" | "closed";
+  // GitHub's own distinction: a PR's `state` becomes "closed" both when
+  // merged and when closed unmerged — `merged` is the only field that tells
+  // those apart. Always false for createPullRequest (a PR is never merged
+  // the instant it's created), meaningful for getPullRequest below.
+  merged: boolean;
+}
+
+interface GithubPullRequestApiBody {
+  number: number;
+  html_url: string;
+  state: string;
+  merged?: boolean;
+}
+
+function toCreatedPullRequest(body: GithubPullRequestApiBody): CreatedPullRequest {
+  return { number: body.number, url: body.html_url, state: body.state === "closed" ? "closed" : "open", merged: body.merged ?? false };
+}
+
+// Idempotent like createBranch: GitHub 422s "A pull request already exists
+// for {owner}:{head}." if one is already open for this head/base pair — that
+// case looks the existing PR up and returns it instead of throwing, so a
+// re-run of the fix-pr job (or two projects racing on the same branch) never
+// produces a duplicate PR.
+export async function createPullRequest(
+  creds: GithubCredentials,
+  input: { head: string; base: string; title: string; body: string },
+): Promise<CreatedPullRequest> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/pulls`, {
+    method: "POST",
+    body: JSON.stringify({ head: input.head, base: input.base, title: input.title, body: input.body }),
+  });
+
+  if (res.ok) {
+    return toCreatedPullRequest((await res.json()) as GithubPullRequestApiBody);
+  }
+
+  if (res.status === 422) {
+    const errBody = (await res.json().catch(() => ({}))) as { message?: string; errors?: { message?: string }[] };
+    const alreadyExists =
+      errBody.message?.includes("already exists") ||
+      errBody.errors?.some((e) => e.message?.includes("already exists"));
+    if (alreadyExists) {
+      const owner = creds.repo.split("/")[0];
+      const existingRes = await githubFetch(
+        creds,
+        `/repos/${creds.repo}/pulls?head=${encodeURIComponent(`${owner}:${input.head}`)}&base=${encodeURIComponent(input.base)}&state=all`,
+      );
+      if (existingRes.ok) {
+        const existing = (await existingRes.json()) as GithubPullRequestApiBody[];
+        const match = existing[0];
+        // The list endpoint doesn't include `merged` (only the single-PR
+        // endpoint does) — a freshly-looked-up "already exists" match is by
+        // definition still open (a merged/closed PR can't 422 as "already
+        // exists" for a new one), so false is correct here, not a guess.
+        if (match) {
+          return { number: match.number, url: match.html_url, state: match.state === "closed" ? "closed" : "open", merged: false };
+        }
+      }
+    }
+  }
+
+  const body = (await res.json().catch(() => ({}))) as { message?: string };
+  throw new GithubApiError(body.message ?? `Could not open a pull request (status ${res.status}).`, res.status);
+}
+
+// Not on the webhook-driven merge-detection path — used by the manual
+// "Sync with GitHub" fallback (ticket.controller.ts's syncGithubPrStatuses)
+// for setups where GitHub can't reach this backend's webhook endpoint (e.g.
+// local dev with no publicly reachable BACKEND_PUBLIC_URL).
+export async function getPullRequest(creds: GithubCredentials, prNumber: number): Promise<CreatedPullRequest | null> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/pulls/${prNumber}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new GithubApiError(`Could not read pull request #${prNumber} (status ${res.status}).`, res.status);
+  }
+  return toCreatedPullRequest((await res.json()) as GithubPullRequestApiBody);
+}
+
+// Deliberately not implemented: merging a pull request. Merging stays a
+// human-only action performed on GitHub itself — Bankai commits the fix and
+// opens the PR, but never clicks merge.

@@ -52,7 +52,7 @@ const RESPONSE_SCHEMA: Schema = {
           remediationGuidance: {
             type: Type.STRING,
             description:
-              "Detailed, actionable, step-by-step guidance a developer can follow to fix this specific instance — concrete enough to act on without further research.",
+              "A short newline-separated list of concrete action items (one per line, no numbering or bullet characters) a developer can follow in order to fix this specific instance — each line a single, specific step, concrete enough to act on without further research.",
           },
         },
         required: ["title", "severity", "cwe", "filePath", "lineStart", "lineEnd", "evidence", "remediationGuidance"],
@@ -69,7 +69,7 @@ Only report genuine, exploitable security vulnerabilities — e.g. injection (SQ
 For every finding:
 - filePath must exactly match the path given in that file's "=== FILE: ... ===" header, unmodified.
 - lineStart/lineEnd must reference the line numbers shown in the left margin of that file's content (1-indexed). Use null only if the issue isn't localized to specific lines.
-- remediationGuidance must be detailed enough that a developer with no prior context on this finding can read it and fix the issue without further research: explain the concrete change to make (not just the general principle), and where relevant include what secure code should look like.
+- remediationGuidance must be a short list of concrete action items, one per line (plain text, no numbering or "-"/"•" prefixes — those are added when displayed), ordered the way a developer should actually do them. Each line should be a specific, concrete step (not a general principle) — a developer with no prior context on this finding should be able to follow the list and fix it without further research. Typically 3-6 lines: the core fix, any related hardening (e.g. fail-fast validation, config changes), and where relevant a final "redeploy" / "verify" step.
 - Do not invent findings. If a file has no genuine vulnerabilities, don't report anything for it.
 
 Return only findings that meet this bar. Respond with JSON matching the provided schema.`;
@@ -113,7 +113,9 @@ export function chunkFiles(files: ScannableFile[], maxCharsPerChunk = 40_000): S
 }
 
 let client: GoogleGenAI | null = null;
-function getClient(): GoogleGenAI {
+// Exported so gemini-fix.ts's fix-generation calls reuse this same client
+// instead of constructing a second one.
+export function getGeminiClient(): GoogleGenAI {
   if (!client) client = new GoogleGenAI({ apiKey: env.GEMINI_API_KEY });
   return client;
 }
@@ -124,7 +126,7 @@ async function analyzeChunk(files: ScannableFile[], context: GeminiScanContext):
   for (let attempt = 1; attempt <= 2; attempt++) {
     let text: string | undefined;
     try {
-      const response = await getClient().models.generateContent({
+      const response = await getGeminiClient().models.generateContent({
         model: env.GEMINI_MODEL,
         contents,
         config: {

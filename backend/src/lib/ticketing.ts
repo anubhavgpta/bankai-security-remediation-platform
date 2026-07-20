@@ -18,7 +18,8 @@ import {
 } from "./jira.js";
 import { logger } from "./logger.js";
 import type { Bucket, Severity, TicketStatus } from "./pipeline-types.js";
-import { computeSlaDueDate, type SlaPolicyDays } from "./sla.js";
+import { enqueueFixPr } from "./queue.js";
+import { computeSlaDueDate, computeSlaStatus, ttrStatusLabel, type SlaPolicyDays } from "./sla.js";
 
 // The per-finding "create a ticket, best-effort sync it to Jira, best-effort
 // create a remediation branch" core, shared by two callers with very
@@ -50,6 +51,10 @@ export interface TicketRow {
   github_branch_name: string | null;
   github_branch_url: string | null;
   github_branch_error: string | null;
+  github_pr_number: number | null;
+  github_pr_url: string | null;
+  github_pr_state: string | null;
+  github_pr_error: string | null;
   // Only present when selected via SELECT_TICKET's join — absent on rows
   // returned directly from the create_project_ticket* RPCs.
   findings?: { external_id: string | null } | { external_id: string | null }[] | null;
@@ -75,12 +80,16 @@ export function toPublicTicket(row: TicketRow) {
     githubBranchName: row.github_branch_name ?? null,
     githubBranchUrl: row.github_branch_url ?? null,
     githubBranchError: row.github_branch_error ?? null,
+    githubPrNumber: row.github_pr_number ?? null,
+    githubPrUrl: row.github_pr_url ?? null,
+    githubPrState: row.github_pr_state ?? null,
+    githubPrError: row.github_pr_error ?? null,
     createdAt: row.created_at,
   };
 }
 
 export const SELECT_TICKET =
-  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, findings ( external_id )";
+  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, github_pr_number, github_pr_url, github_pr_state, github_pr_error, findings ( external_id )";
 
 export interface ProjectJiraRow {
   jira_site: string | null;
@@ -164,6 +173,68 @@ export async function loadGithubCreds(
   };
 }
 
+export interface TicketFormatContext {
+  teamName: string | null;
+  // The standardized ticket description's "Repository" line is just the
+  // project's connected GitHub repo, not a separately entered value.
+  repository: string | null;
+}
+
+interface ProjectTicketFormatRow {
+  team_name: string | null;
+  github_repo: string | null;
+}
+
+// Loaded once per request (not per finding) by every buildFindingDescription
+// caller — team_name/github_repo don't vary per finding within a project.
+export async function loadTicketFormatContext(supabase: SupabaseClient, projectId: string): Promise<TicketFormatContext> {
+  const { data } = await supabase.from("projects").select("team_name, github_repo").eq("id", projectId).single();
+
+  const row = data as ProjectTicketFormatRow | null;
+  return { teamName: row?.team_name ?? null, repository: row?.github_repo ?? null };
+}
+
+// "Finding Count" on the standardized ticket format: how many currently-open
+// findings (any bucket but Resolved) this project has for the same service
+// as the finding the ticket is being built for — computed fresh on every
+// call rather than stored, so it always reflects current state. Falls back
+// to 1 (the finding itself) on a query error rather than 0, since the
+// finding being ticketed is always at least one open finding.
+export async function countOpenFindingsForService(
+  supabase: SupabaseClient,
+  projectId: string,
+  service: string | null,
+): Promise<number> {
+  let query = supabase
+    .from("findings")
+    .select("id", { count: "exact", head: true })
+    .eq("project_id", projectId)
+    .neq("bucket", "Resolved");
+  query = service === null ? query.is("service", null) : query.eq("service", service);
+
+  const { count, error } = await query;
+  if (error) {
+    logger.error({ err: error, projectId, service }, "Could not count open findings for the Finding Count ticket field");
+    return 1;
+  }
+  return count ?? 1;
+}
+
+// The ticket description's "Recommendations" field is populated directly
+// from a CSV import's `recommendations` column when present (container/
+// package-style findings). AI/GitHub-sourced findings never have that
+// column, but do have Gemini's own detailed remediationGuidance text (see
+// gemini.ts) — falling back to that (then to the shorter fixAvailable flag)
+// means AI-sourced findings still get a useful Recommendations block instead
+// of a bare "—".
+export function resolveRecommendations(
+  recommendations: string | null,
+  remediationGuidance: string | null,
+  fixAvailable: string | null,
+): string | null {
+  return recommendations ?? remediationGuidance ?? fixAvailable;
+}
+
 // Best-effort, same contract as Jira issue creation: a remediation branch is
 // a convenience, not something that should fail ticket creation/sync if
 // GitHub is unreachable or misconfigured. Returns the columns to fold into
@@ -200,6 +271,23 @@ export async function attemptBranchCreation(
   }
 }
 
+// Fire-and-forget enqueue of the fix-pr job whenever attemptBranchCreation
+// actually produced a branch — covers every path that creates a branch
+// today (createTicketForFinding, both syncTickets loops) without a manual
+// "Generate Fix" trigger. Never throws: enqueue failures (e.g. Redis
+// unreachable) must not fail ticket/branch creation, same best-effort
+// contract as everything else in this file — logged and swallowed.
+export function maybeEnqueueFixPrJob(
+  branchColumns: { github_branch_name: string | null } | null,
+  ticketId: string,
+  projectId: string,
+): void {
+  if (!branchColumns?.github_branch_name) return;
+  enqueueFixPr({ ticketId, projectId }).catch((err) => {
+    logger.error({ err, ticketId, projectId }, "Could not enqueue the fix-pr job");
+  });
+}
+
 export interface FindingForTicket {
   id: string;
   fingerprint: string;
@@ -219,6 +307,16 @@ export interface FindingForTicket {
   description: string | null;
   fix_available: string | null;
   source_url: string | null;
+  environment: string | null;
+  cves: string | null;
+  affected_packages: string | null;
+  current_versions: string | null;
+  fixed_versions: string | null;
+  recommendations: string | null;
+  remediation_guidance: string | null;
+  commit_sha: string | null;
+  line_start: number | null;
+  line_end: number | null;
 }
 
 export interface TicketingActor {
@@ -236,6 +334,11 @@ export interface CreateTicketForFindingInput {
   // session) or create_project_ticket_system (service-role only, for the
   // repo-scan worker) — see the migration comment above.
   rpcName: "create_project_ticket" | "create_project_ticket_system";
+  // Needed for the ticket description's Team/Image/Finding Count/TTR Status
+  // fields — loaded once by the caller (loadTicketFormatContext), not
+  // per-finding, since team_name/github_repo don't vary within a project.
+  formatContext: TicketFormatContext;
+  slaPolicyDays: SlaPolicyDays;
   activityMeta?: string;
 }
 
@@ -248,7 +351,7 @@ export async function createTicketForFinding(
   supabase: SupabaseClient,
   input: CreateTicketForFindingInput,
 ): Promise<{ ticket: ReturnType<typeof toPublicTicket> }> {
-  const { projectId, finding, jira, github, actor, rpcName } = input;
+  const { projectId, finding, jira, github, actor, rpcName, formatContext, slaPolicyDays } = input;
 
   const { data: ticket, error: rpcError } = await supabase.rpc(rpcName, {
     p_project_id: projectId,
@@ -276,6 +379,8 @@ export async function createTicketForFinding(
   if (jira) {
     try {
       const summary = `[${finding.service ?? "Unassigned"}] ${finding.title}`;
+      const findingCount = await countOpenFindingsForService(supabase, projectId, finding.service);
+      const ttrStatus = ttrStatusLabel(computeSlaStatus(finding.severity, finding.sla_due_date, slaPolicyDays));
       const description = buildFindingDescription({
         id: finding.id,
         fingerprint: finding.fingerprint,
@@ -292,6 +397,20 @@ export async function createTicketForFinding(
         description: finding.description ?? finding.rationale,
         fixAvailable: finding.fix_available,
         sourceUrl: finding.source_url,
+        commitSha: finding.commit_sha,
+        lineStart: finding.line_start,
+        lineEnd: finding.line_end,
+        teamName: formatContext.teamName,
+        service: finding.service,
+        environment: finding.environment,
+        findingCount,
+        ttrStatus,
+        cves: finding.cves,
+        repository: formatContext.repository,
+        affectedPackages: finding.affected_packages,
+        currentVersions: finding.current_versions,
+        fixedVersions: finding.fixed_versions,
+        recommendations: resolveRecommendations(finding.recommendations, finding.remediation_guidance, finding.fix_available),
       });
 
       const issue = await createIssue(jira.creds, {
@@ -327,6 +446,7 @@ export async function createTicketForFinding(
         .select(SELECT_TICKET)
         .single();
       if (updated) ticketRow = updated as TicketRow;
+      maybeEnqueueFixPrJob(branchColumns, ticketRow.id, projectId);
     } catch (err) {
       const message = err instanceof JiraApiError ? err.message : "Could not create a Jira issue for this ticket.";
       logger.error({ err, ticketId: ticketRow.id }, "Jira issue creation failed");
@@ -383,6 +503,70 @@ export async function closeTicketsForResolvedFindings(
   if (jira) {
     const withJiraIssue = (closedRows ?? []).filter((t): t is { id: string; jira_issue_key: string } => !!t.jira_issue_key);
     await Promise.allSettled(withJiraIssue.map((t) => transitionIssue(jira, t.jira_issue_key, "Done")));
+  }
+}
+
+// Called from webhook.controller.ts's pull_request handler when a PR is
+// merged — the human-in-the-loop review step is complete, so the ticket
+// (and, best-effort, its linked Jira issue) moves to Done. The
+// .neq("status","Done") guard makes a replayed/duplicate webhook delivery a
+// harmless no-op (maybeSingle returns null, nothing else runs) rather than
+// re-transitioning an already-closed Jira issue.
+export async function markTicketPrMerged(
+  supabase: SupabaseClient,
+  input: { projectId: string; prNumber: number },
+): Promise<void> {
+  const { data: ticket, error } = await supabase
+    .from("tickets")
+    .update({ status: "Done", github_pr_state: "merged", github_pr_error: null })
+    .eq("project_id", input.projectId)
+    .eq("github_pr_number", input.prNumber)
+    .neq("status", "Done")
+    .select("id, key, title, jira_issue_key")
+    .maybeSingle();
+
+  if (error) {
+    logger.error({ err: error, ...input }, "Could not mark ticket Done after PR merge");
+    return;
+  }
+  if (!ticket) return; // no matching ticket, or it was already Done
+
+  if (ticket.jira_issue_key) {
+    const jira = await loadJiraCreds(supabase, input.projectId);
+    if (jira) void transitionIssue(jira.creds, ticket.jira_issue_key, "Done");
+  }
+
+  await recordActivity(supabase, {
+    projectId: input.projectId,
+    actorId: null,
+    actorLabel: "GitHub",
+    eventType: "ticket",
+    summary: "pull request merged for",
+    linkLabel: ticket.key,
+    linkTo: "tickets",
+    meta: `${ticket.title} · PR #${input.prNumber}`,
+  });
+}
+
+// Called when a PR is closed WITHOUT being merged. Deliberately does not
+// touch ticket.status (stays at "In Review") or auto-retry fix generation —
+// "closed without merge" is ambiguous (wrong fix vs. superseded vs. no
+// longer needed), and retrying automatically risks a second competing
+// commit landing on the same branch. Surfacing github_pr_error is enough for
+// a human to notice and decide what to do next; a manual retry action is a
+// reasonable future addition, not built here.
+export async function markTicketPrClosedWithoutMerge(
+  supabase: SupabaseClient,
+  input: { projectId: string; prNumber: number },
+): Promise<void> {
+  const { error } = await supabase
+    .from("tickets")
+    .update({ github_pr_state: "closed", github_pr_error: "Pull request was closed without being merged." })
+    .eq("project_id", input.projectId)
+    .eq("github_pr_number", input.prNumber);
+
+  if (error) {
+    logger.error({ err: error, ...input }, "Could not mark ticket's PR as closed-without-merge");
   }
 }
 
@@ -527,6 +711,12 @@ export async function reconcileJiraTickets(
       fix_available: issue.fixAvailable ?? null,
       source_url: issue.sourceUrl ?? null,
       service: issue.service ?? null,
+      environment: null,
+      cves: null,
+      affected_packages: null,
+      current_versions: null,
+      fixed_versions: null,
+      recommendations: null,
       bucket: "New Delta",
       confidence: 80,
       rationale: `Imported from Jira issue ${issue.key} — created by a different Bankai project sharing this Jira connection.`,
@@ -595,6 +785,7 @@ export interface UpdateTicketsForChangedFindingsInput {
   projectId: string;
   findingIds: string[];
   jira: JiraCredentials | null;
+  slaPolicyDays: SlaPolicyDays;
 }
 
 interface FindingChangeSnapshot {
@@ -616,6 +807,16 @@ interface FindingChangeSnapshot {
   description: string | null;
   fix_available: string | null;
   source_url: string | null;
+  environment: string | null;
+  cves: string | null;
+  affected_packages: string | null;
+  current_versions: string | null;
+  fixed_versions: string | null;
+  recommendations: string | null;
+  remediation_guidance: string | null;
+  commit_sha: string | null;
+  line_start: number | null;
+  line_end: number | null;
 }
 
 interface ChangedTicketRow {
@@ -641,13 +842,13 @@ export async function updateTicketsForChangedFindings(
   supabase: SupabaseClient,
   input: UpdateTicketsForChangedFindingsInput,
 ): Promise<{ updated: number }> {
-  const { projectId, findingIds, jira } = input;
+  const { projectId, findingIds, jira, slaPolicyDays } = input;
   if (findingIds.length === 0) return { updated: 0 };
 
   const { data: rows, error } = await supabase
     .from("tickets")
     .select(
-      "id, title, service, severity, due_date, jira_issue_key, finding_id, findings ( id, fingerprint, title, service, severity, sla_due_date, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url )",
+      "id, title, service, severity, due_date, jira_issue_key, finding_id, findings ( id, fingerprint, title, service, severity, sla_due_date, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url, environment, cves, affected_packages, current_versions, fixed_versions, recommendations, remediation_guidance, commit_sha, line_start, line_end )",
     )
     .eq("project_id", projectId)
     .in("finding_id", findingIds);
@@ -657,6 +858,7 @@ export async function updateTicketsForChangedFindings(
     return { updated: 0 };
   }
 
+  const formatContext = await loadTicketFormatContext(supabase, projectId);
   let updated = 0;
   for (const row of (rows ?? []) as ChangedTicketRow[]) {
     const finding = Array.isArray(row.findings) ? row.findings[0] : row.findings;
@@ -680,6 +882,8 @@ export async function updateTicketsForChangedFindings(
     updated++;
 
     if (jira && row.jira_issue_key) {
+      const findingCount = await countOpenFindingsForService(supabase, projectId, finding.service);
+      const ttrStatus = ttrStatusLabel(computeSlaStatus(finding.severity, finding.sla_due_date, slaPolicyDays));
       const description = buildFindingDescription({
         id: finding.id,
         fingerprint: finding.fingerprint,
@@ -696,6 +900,20 @@ export async function updateTicketsForChangedFindings(
         description: finding.description ?? finding.rationale,
         fixAvailable: finding.fix_available,
         sourceUrl: finding.source_url,
+        commitSha: finding.commit_sha,
+        lineStart: finding.line_start,
+        lineEnd: finding.line_end,
+        teamName: formatContext.teamName,
+        service: finding.service,
+        environment: finding.environment,
+        findingCount,
+        ttrStatus,
+        cves: finding.cves,
+        repository: formatContext.repository,
+        affectedPackages: finding.affected_packages,
+        currentVersions: finding.current_versions,
+        fixedVersions: finding.fixed_versions,
+        recommendations: resolveRecommendations(finding.recommendations, finding.remediation_guidance, finding.fix_available),
       });
       const ok = await updateIssue(jira, row.jira_issue_key, {
         title: `[${finding.service ?? "Unassigned"}] ${finding.title}`,

@@ -108,6 +108,7 @@ export interface Project {
   id: string;
   name: string;
   description: string | null;
+  teamName: string | null;
   status: "not_connected" | "active";
   services: string[];
   jiraSite: string | null;
@@ -131,6 +132,7 @@ export function getProject(id: string): Promise<{ project: Project }> {
 export function createProject(input: {
   name: string;
   description?: string;
+  teamName?: string;
   services?: string[];
 }): Promise<{ project: Project }> {
   return apiFetch("/projects", { method: "POST", body: JSON.stringify(input) });
@@ -138,6 +140,10 @@ export function createProject(input: {
 
 export function deleteProject(id: string, confirmName: string): Promise<void> {
   return apiFetch(`/projects/${id}`, { method: "DELETE", body: JSON.stringify({ confirmName }) });
+}
+
+export function updateProjectSettings(projectId: string, input: { teamName: string }): Promise<{ teamName: string | null }> {
+  return apiFetch(`/projects/${projectId}`, { method: "PATCH", body: JSON.stringify(input) });
 }
 
 // ---------------------------------------------------------------------
@@ -381,6 +387,10 @@ export interface Ticket {
   githubBranchName: string | null;
   githubBranchUrl: string | null;
   githubBranchError: string | null;
+  githubPrNumber: number | null;
+  githubPrUrl: string | null;
+  githubPrState: "open" | "merged" | "closed" | null;
+  githubPrError: string | null;
   createdAt: string;
 }
 
@@ -403,9 +413,20 @@ export function updateTicketStatus(projectId: string, ticketId: string, status: 
   return apiFetch(`/projects/${projectId}/tickets/${ticketId}`, { method: "PATCH", body: JSON.stringify({ status }) });
 }
 
-export function syncTicketsToJira(
-  projectId: string,
-): Promise<{ synced: number; failed: number; statusPulled: number; removed: number; reconciled: number; imported: number }> {
+// Also polls GitHub for any ticket with an open pull request and applies
+// the merged/closed transition — a fallback for when GitHub's pull_request
+// webhook can't reach this backend (e.g. local dev with no public URL), so
+// merges aren't stuck waiting on a webhook that will never arrive.
+export function syncTicketsToJira(projectId: string): Promise<{
+  synced: number;
+  failed: number;
+  statusPulled: number;
+  removed: number;
+  reconciled: number;
+  imported: number;
+  prMerged: number;
+  prClosed: number;
+}> {
   return apiFetch(`/projects/${projectId}/tickets/sync`, { method: "POST" });
 }
 

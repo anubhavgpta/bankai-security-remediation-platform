@@ -1,5 +1,6 @@
 import type { Request, Response } from "express";
 import { recordActivity } from "../lib/activity.js";
+import { getPullRequest, GithubApiError } from "../lib/github.js";
 import { HttpError } from "../lib/http-error.js";
 import {
   addIssueToSprint,
@@ -12,15 +13,22 @@ import {
 } from "../lib/jira.js";
 import { logger } from "../lib/logger.js";
 import { requireRole } from "../lib/roles.js";
+import { computeSlaStatus, ttrStatusLabel } from "../lib/sla.js";
 import { createUserScopedSupabaseClient } from "../lib/supabase.js";
 import type { Severity } from "../lib/pipeline-types.js";
 import {
   attemptBranchCreation,
   closeTicketsForResolvedFindings,
+  countOpenFindingsForService,
   createTicketForFinding,
   loadGithubCreds,
   loadJiraCreds,
+  loadTicketFormatContext,
+  markTicketPrClosedWithoutMerge,
+  markTicketPrMerged,
+  maybeEnqueueFixPrJob,
   reconcileJiraTickets,
+  resolveRecommendations,
   SELECT_TICKET,
   toPublicTicket,
   type FindingForTicket,
@@ -59,7 +67,7 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
   const { data: findings, error: findingsError } = await supabase
     .from("findings")
     .select(
-      "id, fingerprint, title, service, severity, sla_due_date, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url, tickets ( id )",
+      "id, fingerprint, title, service, severity, sla_due_date, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url, environment, cves, affected_packages, current_versions, fixed_versions, recommendations, remediation_guidance, commit_sha, line_start, line_end, tickets ( id )",
     )
     .eq("project_id", project.id)
     .in("id", findingIds);
@@ -72,6 +80,7 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
   const activeSprintId = jiraCreds ? await getActiveSprintId(jiraCreds.creds, jiraCreds.projectKey) : null;
   const jira = jiraCreds ? { ...jiraCreds, activeSprintId } : null;
   const github = await loadGithubCreds(supabase, project.id);
+  const formatContext = await loadTicketFormatContext(supabase, project.id);
 
   const created: ReturnType<typeof toPublicTicket>[] = [];
   const skipped: string[] = [];
@@ -91,6 +100,8 @@ export async function createTickets(req: Request, res: Response): Promise<void> 
       github,
       actor: { id: req.user!.id, label: actorLabel },
       rpcName: "create_project_ticket",
+      formatContext,
+      slaPolicyDays: project.slaPolicyDays,
     });
     created.push(ticket);
   }
@@ -152,11 +163,49 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
 
   const activeSprintId = await getActiveSprintId(jira.creds, jira.projectKey);
   const github = await loadGithubCreds(supabase, project.id);
+  const formatContext = await loadTicketFormatContext(supabase, project.id);
+
+  // Manual fallback for merge detection, folded into the same "Sync with
+  // Jira" action rather than a separate button: if GitHub's pull_request
+  // webhook can't reach this backend (most commonly local dev with no
+  // publicly reachable BACKEND_PUBLIC_URL, so no webhook was ever
+  // registered at all — see github.controller.ts's persistGithubConnection),
+  // this polls every open-PR ticket's real GitHub state and applies the
+  // same transitions the webhook would have. Skipped entirely if GitHub
+  // isn't connected — this sync only ever requires Jira.
+  let prMerged = 0;
+  let prClosed = 0;
+  if (github) {
+    const { data: prRows } = await supabase
+      .from("tickets")
+      .select("id, github_pr_number")
+      .eq("project_id", project.id)
+      .not("github_pr_number", "is", null)
+      .neq("status", "Done");
+
+    for (const row of prRows ?? []) {
+      if (row.github_pr_number == null) continue;
+      try {
+        const pr = await getPullRequest(github.creds, row.github_pr_number);
+        if (!pr) continue; // PR no longer reachable — leave the ticket as-is
+        if (pr.merged) {
+          await markTicketPrMerged(supabase, { projectId: project.id, prNumber: row.github_pr_number });
+          prMerged++;
+        } else if (pr.state === "closed") {
+          await markTicketPrClosedWithoutMerge(supabase, { projectId: project.id, prNumber: row.github_pr_number });
+          prClosed++;
+        }
+      } catch (err) {
+        const message = err instanceof GithubApiError ? err.message : "Could not check this ticket's pull request status.";
+        logger.error({ err, message, ticketId: row.id }, "GitHub PR status sync failed for a ticket");
+      }
+    }
+  }
 
   const { data: rows, error } = await supabase
     .from("tickets")
     .select(
-      "id, key, title, service, severity, status, due_date, jira_issue_key, github_branch_name, finding_id, findings ( fingerprint, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url )",
+      "id, key, title, service, severity, status, due_date, jira_issue_key, github_branch_name, finding_id, findings ( fingerprint, external_id, rationale, cvss_score, cwe, component, file_path, finding_type, source_status, date_found, description, fix_available, source_url, environment, cves, affected_packages, current_versions, fixed_versions, recommendations, remediation_guidance, commit_sha, line_start, line_end )",
     )
     .eq("project_id", project.id);
 
@@ -196,6 +245,7 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
             .update({ ...statusColumns, ...branchColumns })
             .eq("id", row.id);
         }
+        maybeEnqueueFixPrJob(branchColumns, row.id, project.id);
         continue;
       }
 
@@ -229,6 +279,8 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
       continue;
     }
     const summary = `[${row.service ?? "Unassigned"}] ${row.title}`;
+    const findingCount = await countOpenFindingsForService(supabase, project.id, row.service);
+    const ttrStatus = ttrStatusLabel(computeSlaStatus(row.severity as Severity, row.due_date, project.slaPolicyDays));
     const description = buildFindingDescription({
       id: row.finding_id,
       fingerprint: findingRel.fingerprint,
@@ -245,6 +297,24 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
       description: findingRel?.description ?? findingRel?.rationale ?? null,
       fixAvailable: findingRel?.fix_available ?? null,
       sourceUrl: findingRel?.source_url ?? null,
+      commitSha: findingRel?.commit_sha ?? null,
+      lineStart: findingRel?.line_start ?? null,
+      lineEnd: findingRel?.line_end ?? null,
+      teamName: formatContext.teamName,
+      service: row.service,
+      environment: findingRel?.environment ?? null,
+      findingCount,
+      ttrStatus,
+      cves: findingRel?.cves ?? null,
+      repository: formatContext.repository,
+      affectedPackages: findingRel?.affected_packages ?? null,
+      currentVersions: findingRel?.current_versions ?? null,
+      fixedVersions: findingRel?.fixed_versions ?? null,
+      recommendations: resolveRecommendations(
+        findingRel?.recommendations ?? null,
+        findingRel?.remediation_guidance ?? null,
+        findingRel?.fix_available ?? null,
+      ),
     });
 
     try {
@@ -276,6 +346,7 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
           ...(branchColumns ?? {}),
         })
         .eq("id", row.id);
+      maybeEnqueueFixPrJob(branchColumns, row.id, project.id);
       synced++;
     } catch (err) {
       const message = err instanceof JiraApiError ? err.message : "Could not create a Jira issue for this ticket.";
@@ -285,18 +356,19 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
     }
   }
 
-  if (synced > 0 || statusPulled > 0) {
+  if (synced > 0 || statusPulled > 0 || prMerged > 0 || prClosed > 0) {
+    const prPart = prMerged > 0 || prClosed > 0 ? ` · ${prMerged} PR(s) merged, ${prClosed} closed without merge` : "";
     await recordActivity(supabase, {
       projectId: project.id,
       actorId: req.user!.id,
       actorLabel,
       eventType: "ticket",
       summary: "synced with Jira",
-      meta: `${synced} ticket(s) created, ${statusPulled} status update(s) pulled${failed > 0 ? `, ${failed} failed` : ""}`,
+      meta: `${synced} ticket(s) created, ${statusPulled} status update(s) pulled${failed > 0 ? `, ${failed} failed` : ""}${prPart}`,
     });
   }
 
-  res.status(200).json({ synced, failed, statusPulled, removed, reconciled, imported });
+  res.status(200).json({ synced, failed, statusPulled, removed, reconciled, imported, prMerged, prClosed });
 }
 
 export async function updateTicket(req: Request, res: Response): Promise<void> {

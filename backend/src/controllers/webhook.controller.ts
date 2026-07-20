@@ -4,6 +4,7 @@ import { decrypt } from "../lib/crypto.js";
 import { logger } from "../lib/logger.js";
 import { enqueueRepoScan } from "../lib/queue.js";
 import { supabaseAdmin } from "../lib/supabase.js";
+import { markTicketPrClosedWithoutMerge, markTicketPrMerged } from "../lib/ticketing.js";
 
 interface WebhookProjectRow {
   github_default_branch: string | null;
@@ -16,6 +17,12 @@ interface GithubPushPayload {
   before?: string;
   after?: string;
   deleted?: boolean;
+}
+
+interface GithubPullRequestPayload {
+  action?: string;
+  number?: number;
+  pull_request?: { merged?: boolean };
 }
 
 function verifySignature(secret: string, rawBody: Buffer, signatureHeader: string | undefined): boolean {
@@ -65,6 +72,10 @@ export async function handleGithubWebhook(req: Request, res: Response): Promise<
   const event = req.get("x-github-event");
   if (event === "ping") {
     res.status(200).json({ ok: true });
+    return;
+  }
+  if (event === "pull_request") {
+    await handlePullRequestEvent(projectId, rawBody, res);
     return;
   }
   if (event !== "push") {
@@ -128,4 +139,32 @@ export async function handleGithubWebhook(req: Request, res: Response): Promise<
   // marks them failed/retries otherwise — the scan itself runs in the
   // worker, never in this request.
   res.status(202).json({ queued: true });
+}
+
+// Signature verification already happened in handleGithubWebhook before this
+// is called — same trust boundary as the push handling above. Only
+// "closed" is interesting here: "opened"/"synchronize"/etc. carry nothing
+// Bankai needs to act on (the ticket already moved to "In Review" when the
+// fix-pr job itself opened the PR).
+async function handlePullRequestEvent(projectId: string, rawBody: Buffer, res: Response): Promise<void> {
+  let payload: GithubPullRequestPayload;
+  try {
+    payload = JSON.parse(rawBody.toString("utf8")) as GithubPullRequestPayload;
+  } catch {
+    res.status(400).end();
+    return;
+  }
+
+  if (payload.action !== "closed" || typeof payload.number !== "number") {
+    res.status(200).json({ ignored: true });
+    return;
+  }
+
+  if (payload.pull_request?.merged) {
+    await markTicketPrMerged(supabaseAdmin, { projectId, prNumber: payload.number });
+  } else {
+    await markTicketPrClosedWithoutMerge(supabaseAdmin, { projectId, prNumber: payload.number });
+  }
+
+  res.status(200).json({ ok: true });
 }

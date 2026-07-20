@@ -61,13 +61,15 @@ export default function Tickets() {
     setSyncing(true);
     setSyncMessage(null);
     try {
-      const { synced, failed, statusPulled, removed, reconciled, imported } = await syncTicketsToJira(project.id);
+      const { synced, failed, statusPulled, removed, reconciled, imported, prMerged, prClosed } = await syncTicketsToJira(project.id);
       const parts = [
         synced > 0 && `${synced} created`,
         reconciled > 0 && `${reconciled} linked to existing Jira issue(s)`,
         imported > 0 && `${imported} imported from another project's Jira issue(s)`,
         statusPulled > 0 && `${statusPulled} status update(s) pulled`,
         removed > 0 && `${removed} removed (deleted in Jira)`,
+        prMerged > 0 && `${prMerged} pull request(s) merged`,
+        prClosed > 0 && `${prClosed} pull request(s) closed without merge`,
         failed > 0 && `${failed} failed`,
       ].filter(Boolean);
       setSyncMessage(parts.length > 0 ? parts.join(', ') : 'Everything is already up to date.');
@@ -220,6 +222,25 @@ export default function Tickets() {
                           {t.githubBranchError && (
                             <span style={{ color: '#B91C1C' }} title={t.githubBranchError}> · Branch creation failed</span>
                           )}
+                          {t.githubPrUrl && (
+                            <>
+                              {' · '}
+                              <a
+                                href={t.githubPrUrl}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="ws-mono"
+                                style={{ color: t.githubPrState === 'merged' ? '#22C55E' : t.githubPrState === 'closed' ? '#B91C1C' : 'var(--color-blue)' }}
+                                onClick={(e) => e.stopPropagation()}
+                                title={`Open pull request #${t.githubPrNumber}`}
+                              >
+                                PR #{t.githubPrNumber}{t.githubPrState === 'merged' ? ' · merged' : t.githubPrState === 'closed' ? ' · closed' : ''}
+                              </a>
+                            </>
+                          )}
+                          {t.githubPrError && (
+                            <span style={{ color: '#B91C1C' }} title={t.githubPrError}> · Fix PR issue</span>
+                          )}
                         </div>
                         <div className="tickets-kanban-card-footer">
                           <span className="tickets-kanban-card-due" style={{ color: t.overdue ? '#DC2626' : 'var(--color-text-muted)' }}>
@@ -271,6 +292,22 @@ export default function Tickets() {
                       )}
                       {t.githubBranchError && (
                         <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.githubBranchError}> · Branch creation failed</span>
+                      )}
+                      {t.githubPrUrl && (
+                        <a
+                          href={t.githubPrUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="ws-mono"
+                          style={{ color: t.githubPrState === 'merged' ? '#22C55E' : t.githubPrState === 'closed' ? '#B91C1C' : 'var(--color-blue)', fontSize: 11 }}
+                          onClick={(e) => e.stopPropagation()}
+                          title={`Open pull request #${t.githubPrNumber}`}
+                        >
+                          {' · '}PR #{t.githubPrNumber}{t.githubPrState === 'merged' ? ' · merged' : t.githubPrState === 'closed' ? ' · closed' : ''}
+                        </a>
+                      )}
+                      {t.githubPrError && (
+                        <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.githubPrError}> · Fix PR issue</span>
                       )}
                     </span>
                     <span className="tickets-table-service">{t.service}</span>
