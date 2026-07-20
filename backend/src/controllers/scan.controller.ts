@@ -1,11 +1,22 @@
 import type { Request, Response } from "express";
 import { recordActivity } from "../lib/activity.js";
-import { CsvIngestError, parseFindingsCsv, planIngest, type ExistingFinding } from "../lib/csv-ingest.js";
+import {
+  CsvIngestError,
+  excludeAlreadyTicketedFindings,
+  parseFindingsCsv,
+  planIngest,
+  type ExistingFinding,
+} from "../lib/csv-ingest.js";
 import { HttpError } from "../lib/http-error.js";
 import { requireRole } from "../lib/roles.js";
 import { SCAN_SELECT, toPublicScan, type ScanRow } from "../lib/scans.js";
 import { createUserScopedSupabaseClient } from "../lib/supabase.js";
-import { closeTicketsForResolvedFindings, loadJiraCreds, updateTicketsForChangedFindings } from "../lib/ticketing.js";
+import {
+  closeTicketsForResolvedFindings,
+  fetchAlreadyTicketedFingerprints,
+  loadJiraCreds,
+  updateTicketsForChangedFindings,
+} from "../lib/ticketing.js";
 import { displayNameFromUser } from "../lib/user-display.js";
 
 function userScopedClient(req: Request) {
@@ -85,11 +96,17 @@ export async function uploadScan(req: Request, res: Response): Promise<void> {
 
   const defaultService = projectServices?.length === 1 ? (projectServices[0]?.name ?? null) : null;
 
-  const plan = planIngest(project.id, scan.id, existing, rows, new Date(), project.slaPolicyDays, defaultService);
+  const rawPlan = planIngest(project.id, scan.id, existing, rows, new Date(), project.slaPolicyDays, defaultService);
 
-  // Loaded once, reused below for both change-propagation and resolved
-  // findings — previously only loaded inside the resolved-findings branch.
+  // Loaded once, reused below for change-propagation, resolved findings, and
+  // the already-ticketed-in-Jira filter just below.
   const jira = await loadJiraCreds(supabase, project.id);
+
+  // Skip the Jira API round-trip entirely when there's nothing it could
+  // filter.
+  const alreadyTicketedFingerprints =
+    rawPlan.counts.newDelta > 0 ? await fetchAlreadyTicketedFingerprints(jira) : new Set<string>();
+  const plan = excludeAlreadyTicketedFindings(rawPlan, alreadyTicketedFingerprints);
 
   if (plan.upsertRows.length > 0) {
     const { data: upsertedRows, error: upsertError } = await supabase

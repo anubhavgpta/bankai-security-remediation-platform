@@ -1,12 +1,23 @@
 import type { SupabaseClient } from "@supabase/supabase-js";
 import { env } from "../env.js";
-import { computeAiFingerprint, planIngest, type ExistingFinding, type NormalizedFinding } from "./csv-ingest.js";
+import {
+  computeAiFingerprint,
+  excludeAlreadyTicketedFindings,
+  planIngest,
+  type ExistingFinding,
+  type NormalizedFinding,
+} from "./csv-ingest.js";
 import { analyzeFiles, type ScannableFile } from "./gemini.js";
 import { compareCommits, getBlobs, getBranchHeadSha, getTree, type GithubCredentials } from "./github.js";
 import { logger } from "./logger.js";
 import { filterScannableFiles, isScannablePath } from "./repo-file-filter.js";
 import type { SlaPolicyDays } from "./sla.js";
-import { closeTicketsForResolvedFindings, loadJiraCreds, updateTicketsForChangedFindings } from "./ticketing.js";
+import {
+  closeTicketsForResolvedFindings,
+  fetchAlreadyTicketedFingerprints,
+  loadJiraCreds,
+  updateTicketsForChangedFindings,
+} from "./ticketing.js";
 
 // The repo-scan pipeline: fetch code -> Gemini analysis -> diff against
 // existing findings -> upsert into `findings`, same as the CSV path.
@@ -168,11 +179,17 @@ export async function runFullRepoScan(input: RunRepoScanInput): Promise<RepoScan
     existing = existing.filter((f) => f.filePath && touchedFilePaths.has(f.filePath));
   }
 
-  const plan = planIngest(projectId, scanId, existing, rows, new Date(), slaPolicyDays, defaultService);
+  const rawPlan = planIngest(projectId, scanId, existing, rows, new Date(), slaPolicyDays, defaultService);
 
-  // Loaded once, reused below for both change-propagation and resolved
-  // findings — previously only loaded inside the resolved-findings branch.
+  // Loaded once, reused below for change-propagation, resolved findings, and
+  // the already-ticketed-in-Jira filter just below.
   const jiraCreds = await loadJiraCreds(supabase, projectId);
+
+  // Skip the Jira API round-trip entirely when there's nothing it could
+  // filter.
+  const alreadyTicketedFingerprints =
+    rawPlan.counts.newDelta > 0 ? await fetchAlreadyTicketedFingerprints(jiraCreds) : new Set<string>();
+  const plan = excludeAlreadyTicketedFindings(rawPlan, alreadyTicketedFingerprints);
 
   if (plan.upsertRows.length > 0) {
     const { data: upsertedRows, error } = await supabase

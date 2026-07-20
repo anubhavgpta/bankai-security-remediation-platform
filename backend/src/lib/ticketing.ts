@@ -111,6 +111,31 @@ export async function loadJiraCreds(
   };
 }
 
+// Best-effort membership set for the scan-ingestion Jira dedup check (see
+// excludeAlreadyTicketedFindings in csv-ingest.ts): every fingerprint that
+// already has a Jira issue tracking it in the connected Jira project,
+// regardless of which Bankai project/account originally created that
+// issue — same cross-account reach as reconcileJiraTickets below, since
+// this is a direct Jira API query, not a Bankai DB query. Never throws —
+// an unreachable, rate-limited, or deauthorized Jira must not fail or
+// block the surrounding scan; any failure degrades to "treat nothing as
+// already-ticketed."
+export async function fetchAlreadyTicketedFingerprints(
+  jira: { creds: JiraCredentials; projectKey: string } | null,
+): Promise<Set<string>> {
+  if (!jira) return new Set();
+  try {
+    const issues = await searchIssuesInProject(jira.creds, jira.projectKey);
+    return new Set(issues.flatMap((issue) => (issue.fingerprint ? [issue.fingerprint] : [])));
+  } catch (err) {
+    logger.error(
+      { err, projectKey: jira.projectKey },
+      "Could not check Jira for already-ticketed fingerprints during scan ingestion — proceeding without filtering",
+    );
+    return new Set();
+  }
+}
+
 export interface ProjectGithubRow {
   github_repo: string | null;
   github_token_enc: string | null;
@@ -149,13 +174,14 @@ export async function attemptBranchCreation(
   github: { creds: GithubCredentials; defaultBranch: string } | null,
   jiraCreds: JiraCredentials,
   issueKey: string,
-  ticketKey: string,
-  title: string,
+  fingerprint: string,
+  cwe: string | null,
+  filePath: string | null,
   ticketId: string,
 ): Promise<{ github_branch_name: string | null; github_branch_url: string | null; github_branch_error: string | null } | null> {
   if (!github) return null;
   try {
-    const name = buildBranchName(ticketKey, title);
+    const name = buildBranchName(fingerprint, cwe, filePath);
     const branch = await createBranch(github.creds, { baseBranch: github.defaultBranch, branchName: name });
 
     const comment = await addBranchComment(jiraCreds, issueKey, branch);
@@ -279,7 +305,15 @@ export async function createTicketForFinding(
         void addIssueToSprint(jira.creds, jira.activeSprintId, issue.key);
       }
 
-      const branchColumns = await attemptBranchCreation(github, jira.creds, issue.key, ticketRow.key, finding.title, ticketRow.id);
+      const branchColumns = await attemptBranchCreation(
+        github,
+        jira.creds,
+        issue.key,
+        finding.fingerprint,
+        finding.cwe,
+        finding.file_path,
+        ticketRow.id,
+      );
 
       const { data: updated } = await supabase
         .from("tickets")

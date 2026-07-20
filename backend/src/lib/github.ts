@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { logger } from "./logger.js";
 
 export interface GithubCredentials {
@@ -205,9 +206,23 @@ function slug(text: string): string {
     .replace(/-+$/g, "");
 }
 
-export function buildBranchName(ticketKey: string, title: string): string {
-  const suffix = slug(title);
-  return `remediation/${ticketKey.toLowerCase()}${suffix ? `-${suffix}` : ""}`;
+// Deterministic identity segment: two unrelated Bankai accounts creating a
+// ticket for the same vulnerability (same fingerprint) on the same repo
+// must produce the identical branch name, so createBranch's existing
+// 422-idempotency (below) naturally converges them onto one branch instead
+// of creating a duplicate. Short hex slice, not the full digest — this is
+// a collision-avoidance identifier, not a security boundary.
+function fingerprintSlug(fingerprint: string): string {
+  return createHash("sha256").update(fingerprint).digest("hex").slice(0, 10);
+}
+
+export function buildBranchName(fingerprint: string, cwe: string | null, filePath: string | null): string {
+  const readable = [cwe, filePath ? filePath.split("/").pop() : null]
+    .filter((s): s is string => !!s)
+    .map(slug)
+    .filter(Boolean)
+    .join("-");
+  return `remediation/${fingerprintSlug(fingerprint)}${readable ? `-${readable}` : ""}`;
 }
 
 // Never throws — same best-effort contract as jira.ts's deleteIssue. A 404
@@ -233,6 +248,11 @@ export interface CreatedBranch {
 // Idempotent: if the branch already exists (422 "Reference already exists"),
 // this returns the existing branch instead of throwing — a ticket's branch
 // creation may be retried (e.g. via syncTickets) without producing an error.
+// Since buildBranchName derives the name from the vulnerability's own
+// fingerprint rather than any account-local ticket key, this idempotency
+// also naturally covers two unrelated Bankai accounts creating a ticket for
+// the same vulnerability on the same repo — the second call resolves to the
+// first account's branch instead of creating a duplicate.
 export async function createBranch(
   creds: GithubCredentials,
   input: { baseBranch: string; branchName: string },

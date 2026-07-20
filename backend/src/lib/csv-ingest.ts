@@ -352,3 +352,34 @@ export function planIngest(
 
   return { upsertRows, resolvedFingerprints, counts };
 }
+
+// Applied after planIngest, before the caller upserts plan.upsertRows —
+// drops "New Delta" rows whose fingerprint already has a tracked Jira
+// issue in this project's connected Jira project (see
+// ticketing.ts:fetchAlreadyTicketedFingerprints), since that vulnerability
+// is already tracked via the shared Jira project and doesn't need a
+// second local finding/AI Triage entry. Only ever touches "New Delta"
+// rows — a Changed/In Progress row already has a local finding here, so
+// this must never remove it. Kept as a separate pure step (rather than a
+// planIngest parameter) so planIngest itself stays Jira-agnostic,
+// synchronous, and trivially testable.
+export function excludeAlreadyTicketedFindings(
+  plan: IngestPlan,
+  alreadyTicketedFingerprints: ReadonlySet<string>,
+): IngestPlan {
+  if (alreadyTicketedFingerprints.size === 0) return plan;
+
+  let skipped = 0;
+  const upsertRows = plan.upsertRows.filter((row) => {
+    if (row.bucket !== "New Delta" || !alreadyTicketedFingerprints.has(row.fingerprint)) return true;
+    skipped++;
+    return false;
+  });
+  if (skipped === 0) return plan;
+
+  return {
+    upsertRows,
+    resolvedFingerprints: plan.resolvedFingerprints,
+    counts: { ...plan.counts, newDelta: plan.counts.newDelta - skipped },
+  };
+}

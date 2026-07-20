@@ -170,14 +170,25 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
   let removed = 0;
 
   for (const row of rows ?? []) {
+    const findingRel = Array.isArray(row.findings) ? row.findings[0] : row.findings;
+
     if (row.jira_issue_key) {
       const snapshot = await getIssueSnapshot(jira.creds, row.jira_issue_key);
       if (snapshot.exists) {
         const statusColumns =
           snapshot.status && snapshot.status !== row.status ? { status: snapshot.status } : null;
-        const branchColumns = !row.github_branch_name
-          ? await attemptBranchCreation(github, jira.creds, row.jira_issue_key, row.key, row.title, row.id)
-          : null;
+        const branchColumns =
+          !row.github_branch_name && findingRel
+            ? await attemptBranchCreation(
+                github,
+                jira.creds,
+                row.jira_issue_key,
+                findingRel.fingerprint,
+                findingRel.cwe,
+                findingRel.file_path,
+                row.id,
+              )
+            : null;
         if (statusColumns) statusPulled++;
         if (statusColumns || branchColumns) {
           await supabase
@@ -212,7 +223,6 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
       continue;
     }
 
-    const findingRel = Array.isArray(row.findings) ? row.findings[0] : row.findings;
     if (!findingRel) {
       logger.error({ ticketId: row.id, findingId: row.finding_id }, "Ticket's finding relation missing during Jira sync");
       failed++;
@@ -248,7 +258,15 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
       if (activeSprintId) {
         void addIssueToSprint(jira.creds, activeSprintId, issue.key);
       }
-      const branchColumns = await attemptBranchCreation(github, jira.creds, issue.key, row.key, row.title, row.id);
+      const branchColumns = await attemptBranchCreation(
+        github,
+        jira.creds,
+        issue.key,
+        findingRel.fingerprint,
+        findingRel.cwe,
+        findingRel.file_path,
+        row.id,
+      );
       await supabase
         .from("tickets")
         .update({
