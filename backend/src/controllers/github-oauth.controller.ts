@@ -1,7 +1,6 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes, timingSafeEqual } from "node:crypto";
 import type { Request, Response } from "express";
 import { env } from "../env.js";
-import { baseCookieOptions } from "../lib/auth-cookies.js";
 import { decrypt, encrypt } from "../lib/crypto.js";
 import {
   buildAuthorizeUrl,
@@ -12,21 +11,65 @@ import {
 import { GithubApiError } from "../lib/github.js";
 import { HttpError } from "../lib/http-error.js";
 import { logger } from "../lib/logger.js";
-import { createUserScopedSupabaseClient } from "../lib/supabase.js";
+import { createUserScopedSupabaseClient, supabaseAdmin } from "../lib/supabase.js";
 
-const STATE_COOKIE = "bankai_gh_oauth_state";
 const STATE_MAX_AGE_MS = 5 * 60 * 1000;
+
+interface GithubOAuthState {
+  nonce: string;
+  userId: string;
+  issuedAt: number;
+}
 
 function userScopedClient(req: Request) {
   return createUserScopedSupabaseClient(req.accessToken as string);
 }
 
+function signStatePayload(payload: string): string {
+  return createHmac("sha256", env.TOKEN_ENC_KEY).update(payload).digest("base64url");
+}
+
+function encodeState(state: GithubOAuthState): string {
+  const payload = Buffer.from(JSON.stringify(state), "utf8").toString("base64url");
+  return `${payload}.${signStatePayload(payload)}`;
+}
+
+function decodeState(raw: string): GithubOAuthState | null {
+  const [payload, signature] = raw.split(".");
+  if (!payload || !signature) return null;
+
+  const expected = signStatePayload(payload);
+  const providedBuffer = Buffer.from(signature);
+  const expectedBuffer = Buffer.from(expected);
+  if (providedBuffer.length !== expectedBuffer.length || !timingSafeEqual(providedBuffer, expectedBuffer)) {
+    return null;
+  }
+
+  try {
+    const parsed = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as Partial<GithubOAuthState>;
+    if (
+      typeof parsed.nonce !== "string"
+      || typeof parsed.userId !== "string"
+      || typeof parsed.issuedAt !== "number"
+      || Date.now() - parsed.issuedAt > STATE_MAX_AGE_MS
+    ) {
+      return null;
+    }
+    return { nonce: parsed.nonce, userId: parsed.userId, issuedAt: parsed.issuedAt };
+  } catch {
+    return null;
+  }
+}
+
 // Kicks off the OAuth redirect. Real navigation (the frontend sets
 // window.location, not fetch), so this always ends in a redirect — never a
 // JSON error — GitHub is the next hop.
-export function authorizeGithubAccount(_req: Request, res: Response): void {
-  const state = randomBytes(24).toString("hex");
-  res.cookie(STATE_COOKIE, state, { ...baseCookieOptions(), maxAge: STATE_MAX_AGE_MS });
+export function authorizeGithubAccount(req: Request, res: Response): void {
+  const state = encodeState({
+    nonce: randomBytes(24).toString("hex"),
+    userId: req.user!.id,
+    issuedAt: Date.now(),
+  });
   res.redirect(buildAuthorizeUrl(state));
 }
 
@@ -37,10 +80,6 @@ export function authorizeGithubAccount(_req: Request, res: Response): void {
 export async function githubAccountCallback(req: Request, res: Response): Promise<void> {
   const redirectTo = (status: "connected" | "error") => res.redirect(`${env.FRONTEND_ORIGIN}/settings?github_account=${status}`);
 
-  const cookies = req.cookies as Record<string, string | undefined> | undefined;
-  const expectedState = cookies?.[STATE_COOKIE];
-  res.clearCookie(STATE_COOKIE, baseCookieOptions());
-
   const { code, state, error: oauthError } = req.query;
   if (oauthError) {
     // User declined the authorization on GitHub's consent screen — not a
@@ -48,8 +87,15 @@ export async function githubAccountCallback(req: Request, res: Response): Promis
     redirectTo("error");
     return;
   }
-  if (!expectedState || typeof state !== "string" || state !== expectedState || typeof code !== "string") {
-    logger.warn({ hasState: !!state, hasExpected: !!expectedState }, "GitHub OAuth callback failed state verification");
+  if (typeof state !== "string" || typeof code !== "string") {
+    logger.warn({ hasState: typeof state === "string", hasCode: typeof code === "string" }, "GitHub OAuth callback missing state or code");
+    redirectTo("error");
+    return;
+  }
+
+  const verifiedState = decodeState(state);
+  if (!verifiedState) {
+    logger.warn("GitHub OAuth callback failed state verification");
     redirectTo("error");
     return;
   }
@@ -58,8 +104,7 @@ export async function githubAccountCallback(req: Request, res: Response): Promis
     const { token, scope } = await exchangeCodeForToken(code);
     const identity = await getAuthenticatedGithubUser(token);
 
-    const supabase = userScopedClient(req);
-    const { error: dbError } = await supabase
+    const { error: dbError } = await supabaseAdmin
       .from("profiles")
       .update({
         github_user_id: identity.id,
@@ -68,17 +113,17 @@ export async function githubAccountCallback(req: Request, res: Response): Promis
         github_oauth_scope: scope,
         github_oauth_connected_at: new Date().toISOString(),
       })
-      .eq("id", req.user!.id);
+      .eq("id", verifiedState.userId);
 
     if (dbError) {
-      logger.error({ err: dbError, userId: req.user!.id }, "Could not persist GitHub account connection");
+      logger.error({ err: dbError, userId: verifiedState.userId }, "Could not persist GitHub account connection");
       redirectTo("error");
       return;
     }
 
     redirectTo("connected");
   } catch (err) {
-    logger.error({ err, userId: req.user?.id }, "GitHub OAuth callback failed");
+    logger.error({ err, userId: verifiedState.userId }, "GitHub OAuth callback failed");
     redirectTo("error");
   }
 }
