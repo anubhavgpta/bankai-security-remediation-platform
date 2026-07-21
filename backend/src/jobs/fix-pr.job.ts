@@ -12,7 +12,7 @@ import {
 } from "../lib/github.js";
 import { transitionIssue, type JiraCredentials } from "../lib/jira.js";
 import { logger } from "../lib/logger.js";
-import type { FixPrJobData } from "../lib/queue.js";
+import { enqueuePipelineVerification, type FixPrJobData } from "../lib/queue.js";
 import { loadGithubCreds, loadJiraCreds } from "../lib/ticketing.js";
 import { supabaseAdmin } from "../lib/supabase.js";
 
@@ -175,6 +175,13 @@ export async function processFixPrJob(job: Job<FixPrJobData>): Promise<void> {
       })
       .eq("id", ticketId);
     await maybeTransitionJira(jira, ticket.jira_issue_key, "In Review");
+
+    // Best-effort, fire-and-forget — same contract as maybeEnqueueFixPrJob
+    // in ticketing.ts: a queue/Redis hiccup here must not fail the PR that
+    // was just successfully opened.
+    enqueuePipelineVerification({ ticketId, projectId }).catch((err) => {
+      logger.error({ err, ticketId, projectId }, "Could not enqueue the CI verification pipeline");
+    });
 
     await recordActivity(supabase, {
       projectId,

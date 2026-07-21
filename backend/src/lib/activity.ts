@@ -5,7 +5,7 @@ export interface RecordActivityInput {
   projectId: string;
   actorId: string | null;
   actorLabel: string;
-  eventType: "upload" | "triage" | "ticket" | "sla";
+  eventType: "upload" | "triage" | "ticket" | "sla" | "pipeline";
   summary: string;
   linkLabel?: string | null;
   linkTo?: string | null;

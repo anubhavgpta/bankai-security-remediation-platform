@@ -169,7 +169,7 @@ export default function RemediationWorkflow() {
           <div className="workflow-snapshot-grid">
             {[
               { value: latestScan.newDeltaCount, label: 'New Delta' },
-              { value: latestScan.inProgressCount, label: 'Already in Progress' },
+              { value: overview?.kpis.inReviewTickets ?? 0, label: 'Already in Review' },
               { value: latestScan.changedCount, label: 'Changed' },
               { value: latestScan.resolvedCount, label: 'Resolved/Not Present' },
             ].map((s) => (

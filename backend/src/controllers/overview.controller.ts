@@ -44,6 +44,7 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
 
   const tickets = ticketsRes.data ?? [];
   const openTickets = tickets.filter((t) => t.status !== "Done").length;
+  const inReviewTickets = tickets.filter((t) => t.status === "In Review").length;
   const doneTickets = tickets.filter((t) => t.status === "Done");
   const meanTimeToRemediateDays =
     doneTickets.length > 0
@@ -83,7 +84,7 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
 
   res.status(200).json({
     overview: {
-      kpis: { totalCvits, slaBreachedPct, openTickets, meanTimeToRemediateDays },
+      kpis: { totalCvits, slaBreachedPct, openTickets, inReviewTickets, meanTimeToRemediateDays },
       severityDistribution,
       serviceBreakdown,
       trend,

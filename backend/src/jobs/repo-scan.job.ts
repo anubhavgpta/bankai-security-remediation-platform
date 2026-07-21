@@ -27,6 +27,23 @@ export async function processRepoScanJob(job: Job<RepoScanJobData>): Promise<voi
   const { scanId, projectId, baseSha, headSha } = job.data;
   const supabase = supabaseAdmin;
 
+  // Guards against BullMQ's stalled-job redelivery (e.g. the worker process
+  // restarting mid-scan, which happens routinely in dev under `tsx watch`):
+  // a scan only ever starts out "Queued", so a second delivery of the same
+  // job lands here with status already "Processing" (the first run is still
+  // in flight, or died without updating it) or "Done"/"Failed" (the first
+  // run already finished). Re-running runFullRepoScan in any of those cases
+  // would call the AI scanner a second time over unchanged code — since its
+  // output isn't deterministic, a finding the first pass flagged can simply
+  // go undetected on the second, and getting treated as "resolved" would
+  // auto-close its ticket (and push Done to Jira) even though nothing about
+  // the underlying code, or its remediation PR, actually changed.
+  const { data: existingScan } = await supabase.from("scans").select("status").eq("id", scanId).maybeSingle();
+  if (existingScan && existingScan.status !== "Queued") {
+    logger.warn({ scanId, projectId, status: existingScan.status }, "Skipping redelivered repo-scan job — already processed");
+    return;
+  }
+
   await supabase.from("scans").update({ status: "Processing", bullmq_job_id: job.id ?? null }).eq("id", scanId);
 
   try {

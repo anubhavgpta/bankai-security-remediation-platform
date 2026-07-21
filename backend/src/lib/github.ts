@@ -154,7 +154,7 @@ export async function registerWebhook(creds: GithubCredentials, input: { url: st
     body: JSON.stringify({
       name: "web",
       active: true,
-      events: ["push", "pull_request"],
+      events: ["push", "pull_request", "workflow_run"],
       config: { url: input.url, content_type: "json", secret: input.secret, insecure_ssl: "0" },
     }),
   });
@@ -487,6 +487,164 @@ export async function getPullRequest(creds: GithubCredentials, prNumber: number)
     throw new GithubApiError(`Could not read pull request #${prNumber} (status ${res.status}).`, res.status);
   }
   return toCreatedPullRequest((await res.json()) as GithubPullRequestApiBody);
+}
+
+// --- CI/CD verification pipeline: dispatching bankai-verify.yml on a
+// remediation branch and reading its result back ---
+
+// Contents API existence check for the scaffold workflow file — used to
+// decide whether pipeline.job.ts can dispatch directly or must first open a
+// bootstrap PR. A 404 is the expected "not present" case, not an error.
+export async function repoFileExists(creds: GithubCredentials, path: string, ref: string): Promise<boolean> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/contents/${path}?ref=${encodeURIComponent(ref)}`);
+  if (res.status === 404) return false;
+  if (!res.ok) {
+    throw new GithubApiError(`Could not check for "${path}" on ${ref} (status ${res.status}).`, res.status);
+  }
+  return true;
+}
+
+export async function getRepoFileContent(creds: GithubCredentials, path: string, ref: string): Promise<string | null> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/contents/${path}?ref=${encodeURIComponent(ref)}`);
+  if (res.status === 404) return null;
+  if (!res.ok) {
+    throw new GithubApiError(`Could not read "${path}" on ${ref} (status ${res.status}).`, res.status);
+  }
+
+  const body = (await res.json()) as { content?: string; encoding?: string; type?: string };
+  if (body.type !== "file" || typeof body.content !== "string" || body.encoding !== "base64") {
+    throw new GithubApiError(`"${path}" on ${ref} is not a readable file.`);
+  }
+  return Buffer.from(body.content.replace(/\s/g, ""), "base64").toString("utf8");
+}
+
+// workflow_dispatch only works for a workflow file that already exists on
+// the repo's default branch (a GitHub limitation, not a Bankai choice) — see
+// the migration comment on projects.ci_bootstrap_status. `workflowFile` is
+// the filename GitHub uses as the workflow_id (e.g. "bankai-verify.yml").
+export async function dispatchWorkflowRun(
+  creds: GithubCredentials,
+  input: { workflowFile: string; ref: string; inputs?: Record<string, string> },
+): Promise<void> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/actions/workflows/${input.workflowFile}/dispatches`, {
+    method: "POST",
+    body: JSON.stringify({ ref: input.ref, inputs: input.inputs ?? {} }),
+  });
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { message?: string };
+    throw new GithubApiError(body.message ?? `Could not dispatch "${input.workflowFile}" (status ${res.status}).`, res.status);
+  }
+}
+
+export interface WorkflowRunSummary {
+  id: number;
+  htmlUrl: string;
+  status: string;
+  conclusion: string | null;
+}
+
+// workflow_dispatch's response carries no run id, so callers correlate by
+// listing the workflow's most recent runs on the dispatched branch right
+// after dispatching — the newest one (list is already newest-first) is the
+// one just triggered. Filtered server-side by `event=workflow_dispatch` so a
+// human manually re-running the same workflow on the same branch around the
+// same time can't be mistaken for Bankai's own dispatch.
+export async function listWorkflowRuns(
+  creds: GithubCredentials,
+  input: { workflowFile: string; branch: string },
+): Promise<WorkflowRunSummary[]> {
+  const res = await githubFetch(
+    creds,
+    `/repos/${creds.repo}/actions/workflows/${input.workflowFile}/runs?branch=${encodeURIComponent(input.branch)}&event=workflow_dispatch&per_page=5`,
+  );
+  if (res.status === 404) return [];
+  if (!res.ok) {
+    throw new GithubApiError(`Could not list workflow runs for "${input.workflowFile}" (status ${res.status}).`, res.status);
+  }
+  const body = (await res.json()) as { workflow_runs: { id: number; html_url: string; status: string; conclusion: string | null }[] };
+  return body.workflow_runs.map((r) => ({ id: r.id, htmlUrl: r.html_url, status: r.status, conclusion: r.conclusion }));
+}
+
+export interface WorkflowRunJob {
+  id: number;
+  name: string;
+  status: string;
+  conclusion: string | null;
+}
+
+// Per-job (build/image/deploy-dev/test) results for a completed run — feeds
+// pipeline_runs.stages so the evidence comment/UI can show which stage
+// actually failed, not just the run's overall conclusion. `id` lets a
+// self-healing retry look up the failing job's own logs via getJobLogs.
+export async function getWorkflowRunJobs(creds: GithubCredentials, runId: number): Promise<WorkflowRunJob[]> {
+  const res = await githubFetch(creds, `/repos/${creds.repo}/actions/runs/${runId}/jobs`);
+  if (!res.ok) {
+    throw new GithubApiError(`Could not read jobs for run ${runId} (status ${res.status}).`, res.status);
+  }
+  const body = (await res.json()) as { jobs: { id: number; name: string; status: string; conclusion: string | null }[] };
+  return body.jobs.map((j) => ({ id: j.id, name: j.name, status: j.status, conclusion: j.conclusion }));
+}
+
+const MAX_JOB_LOG_CHARS = 20_000;
+
+// Best-effort — never throws, returns null on any failure (logged at warn,
+// not error: a missing log is an expected degraded case for the self-healing
+// retry loop, not a bug). GitHub's job-logs endpoint 302-redirects to a
+// pre-signed blob URL; that redirect target must never see this project's
+// GitHub token, so this deliberately does NOT reuse githubFetch (which
+// attaches Authorization/Accept/etc. to every request) — it follows the
+// redirect manually and only ever sends real GitHub headers to api.github.com.
+export async function getJobLogs(creds: GithubCredentials, jobId: number): Promise<string | null> {
+  try {
+    const redirectRes = await fetch(`https://api.github.com/repos/${creds.repo}/actions/jobs/${jobId}/logs`, {
+      redirect: "manual",
+      headers: {
+        Authorization: `Bearer ${creds.token}`,
+        "X-GitHub-Api-Version": "2022-11-28",
+      },
+    });
+    const location = redirectRes.headers.get("location");
+    if (redirectRes.status !== 302 || !location) {
+      logger.warn({ jobId, status: redirectRes.status }, "GitHub did not return a redirect for job logs");
+      return null;
+    }
+    const logRes = await fetch(location);
+    if (!logRes.ok) {
+      logger.warn({ jobId, status: logRes.status }, "Could not download job logs from the redirect target");
+      return null;
+    }
+    const text = await logRes.text();
+    if (text.length > MAX_JOB_LOG_CHARS) {
+      return `[... truncated, showing final ${MAX_JOB_LOG_CHARS} characters ...]\n${text.slice(-MAX_JOB_LOG_CHARS)}`;
+    }
+    return text;
+  } catch (err) {
+    logger.warn({ err, jobId }, "Could not fetch job logs");
+    return null;
+  }
+}
+
+export interface PostedComment {
+  ok: boolean;
+  status?: number;
+  message?: string;
+}
+
+// Best-effort, same contract as jira.ts's addBranchComment — posting
+// pipeline evidence must never fail the webhook handler that generated it.
+// PRs are "issues" for GitHub's comments API, hence the /issues/ path.
+export async function createPullRequestComment(creds: GithubCredentials, prNumber: number, body: string): Promise<PostedComment> {
+  try {
+    const res = await githubFetch(creds, `/repos/${creds.repo}/issues/${prNumber}/comments`, {
+      method: "POST",
+      body: JSON.stringify({ body }),
+    });
+    if (res.ok) return { ok: true };
+    const errBody = (await res.json().catch(() => ({}))) as { message?: string };
+    return errBody.message ? { ok: false, status: res.status, message: errBody.message } : { ok: false, status: res.status };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : "Could not reach GitHub." };
+  }
 }
 
 // Deliberately not implemented: merging a pull request. Merging stays a

@@ -261,6 +261,107 @@
   color: var(--color-text-muted);
 }
 
+/* Circular icon buttons (Jira/GitHub deep links, CI retry) */
+
+.ws-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  border: none;
+  cursor: pointer;
+  padding: 0;
+  flex-shrink: 0;
+  text-decoration: none;
+  transition: background-color 0.12s ease;
+}
+
+.ws-icon-btn--sm {
+  width: 22px;
+  height: 22px;
+}
+
+.ws-icon-btn--label {
+  width: auto;
+  padding: 0 10px 0 8px;
+  gap: 5px;
+  font-size: 11px;
+  font-weight: 700;
+}
+
+.ws-icon-btn--sm.ws-icon-btn--label {
+  padding: 0 8px 0 6px;
+  gap: 4px;
+  font-size: 10px;
+}
+
+.ws-icon-btn--jira {
+  background: var(--color-jira-blue);
+  color: #fff;
+}
+
+.ws-icon-btn--jira:hover {
+  opacity: 0.8;
+  color: #fff;
+}
+
+.ws-icon-btn--github {
+  background: #171717;
+  color: #fff;
+}
+
+.ws-icon-btn--github:hover {
+  opacity: 0.8;
+  color: #fff;
+}
+
+.ws-icon-btn--retry {
+  background: var(--color-fill);
+  color: var(--color-text-subtle);
+}
+
+.ws-icon-btn--retry:hover:not(:disabled) {
+  background: var(--color-border-strong);
+}
+
+.ws-icon-btn--retry:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.ws-icon-btn--warn {
+  background: var(--color-red-bg);
+  color: #B91C1C;
+  cursor: default;
+  font-size: 12px;
+  font-weight: 700;
+}
+
+/* CI status circle */
+
+.ci-status-circle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  flex-shrink: 0;
+  text-decoration: none;
+}
+
+@keyframes ws-spin {
+  to { transform: rotate(360deg); }
+}
+
+.ci-spinner {
+  display: inline-block;
+  border-radius: 999px;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: ws-spin 0.7s linear infinite;
+}
+
 /* Stat tiles */
 
 .ws-stat-tile {

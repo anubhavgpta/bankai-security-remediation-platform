@@ -1,7 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link } from 'react-router-dom';
 import WorkspaceBreadcrumb from '../../components/WorkspaceBreadcrumb';
-import { ApiError, listTickets, syncTicketsToJira, type Severity, type Ticket, type TicketStatus } from '../../lib/api';
+import GithubIcon from '../../components/GithubIcon';
+import JiraIcon from '../../components/JiraIcon';
+import CiStatusCircle from '../../components/CiStatusCircle';
+import RetryCiButton from '../../components/RetryCiButton';
+import { ApiError, listTickets, retryTicketPipeline, syncTicketsToJira, type Severity, type Ticket, type TicketStatus } from '../../lib/api';
 import { canEdit } from '../../lib/roles';
 import { useProject } from '../../lib/project-context';
 import './Tickets.css';
@@ -29,6 +33,15 @@ function formatDue(dueDate: string | null): string {
   return new Date(`${dueDate}T00:00:00Z`).toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
 }
 
+// Nothing re-triggers a stuck ticket's pipeline on its own — 'pending_setup'
+// can mean "genuinely waiting on a human to merge the bootstrap PR" or
+// "missed the one-time re-enqueue sweep", and 'failed'/a bare ciError both
+// mean the last attempt didn't succeed. 'queued'/'running' are already
+// in-flight, so retrying those would just race the job already running.
+function canRetryCi(t: Ticket): boolean {
+  return t.ciStatus === 'pending_setup' || t.ciStatus === 'failed' || (!t.ciStatus && !!t.ciError);
+}
+
 export default function Tickets() {
   const { project } = useProject();
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -38,6 +51,7 @@ export default function Tickets() {
   const [view, setView] = useState<'kanban' | 'table'>('kanban');
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!project) return;
@@ -79,6 +93,21 @@ export default function Tickets() {
       setSyncMessage(err instanceof ApiError ? err.message : 'Could not sync tickets to Jira.');
     } finally {
       setSyncing(false);
+    }
+  };
+
+  const handleRetryPipeline = async (ticketId: string) => {
+    if (!project) return;
+    setRetryingId(ticketId);
+    try {
+      await retryTicketPipeline(project.id, ticketId);
+      const { tickets: refreshed } = await listTickets(project.id);
+      setTickets(refreshed);
+    } catch {
+      // Best-effort UI action — the ticket's own ciError (refreshed above if
+      // it changed) is the source of truth, not a toast here.
+    } finally {
+      setRetryingId(null);
     }
   };
 
@@ -172,17 +201,9 @@ export default function Tickets() {
                   </div>
                   <div className="tickets-kanban-cards">
                     {col.cards.map((t) => (
-                      <div
-                        key={t.id}
-                        className="tickets-kanban-card"
-                        style={{ cursor: t.jiraIssueUrl ? 'pointer' : 'default' }}
-                        onClick={() => t.jiraIssueUrl && window.open(t.jiraIssueUrl, '_blank', 'noopener,noreferrer')}
-                        title={t.jiraIssueUrl ? `Open ${t.jiraIssueKey} in Jira` : undefined}
-                      >
+                      <div key={t.id} className="tickets-kanban-card">
                         <div className="tickets-kanban-card-top">
-                          <span className="ws-mono tickets-kanban-card-key" style={t.jiraIssueKey ? { color: 'var(--color-blue)', textDecoration: 'underline' } : undefined}>
-                            {t.jiraIssueKey ?? t.key}
-                          </span>
+                          <span className="ws-mono tickets-kanban-card-key">{t.jiraIssueKey ?? t.key}</span>
                           <span className={sevBadgeClass(t.severity)} style={{ padding: '2.5px 9px', fontSize: 10.5 }}>{t.severity}</span>
                         </div>
                         <div className="tickets-kanban-card-title">{t.title}</div>
@@ -191,55 +212,50 @@ export default function Tickets() {
                           {t.findingExternalId && (
                             <>
                               {' · '}
-                              <Link
-                                to={`/workspace/${project?.id}/triage`}
-                                className="tickets-kanban-card-cvit"
-                                onClick={(e) => e.stopPropagation()}
-                              >
+                              <Link to={`/workspace/${project?.id}/triage`} className="tickets-kanban-card-cvit">
                                 {t.findingExternalId}
                               </Link>
                             </>
                           )}
-                          {t.jiraSyncError && (
-                            <span style={{ color: '#B91C1C' }} title={t.jiraSyncError}> · Jira sync failed</span>
-                          )}
-                          {t.githubBranchUrl && (
-                            <>
-                              {' · '}
-                              <a
-                                href={t.githubBranchUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="ws-mono"
-                                style={{ color: 'var(--color-text-muted)' }}
-                                onClick={(e) => e.stopPropagation()}
-                                title={`Open branch ${t.githubBranchName}`}
-                              >
-                                {t.githubBranchName}
-                              </a>
-                            </>
-                          )}
-                          {t.githubBranchError && (
-                            <span style={{ color: '#B91C1C' }} title={t.githubBranchError}> · Branch creation failed</span>
-                          )}
-                          {t.githubPrUrl && (
-                            <>
-                              {' · '}
-                              <a
-                                href={t.githubPrUrl}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="ws-mono"
-                                style={{ color: t.githubPrState === 'merged' ? '#22C55E' : t.githubPrState === 'closed' ? '#B91C1C' : 'var(--color-blue)' }}
-                                onClick={(e) => e.stopPropagation()}
-                                title={`Open pull request #${t.githubPrNumber}`}
-                              >
-                                PR #{t.githubPrNumber}{t.githubPrState === 'merged' ? ' · merged' : t.githubPrState === 'closed' ? ' · closed' : ''}
-                              </a>
-                            </>
-                          )}
-                          {t.githubPrError && (
-                            <span style={{ color: '#B91C1C' }} title={t.githubPrError}> · Fix PR issue</span>
+                        </div>
+                        <div className="tickets-kanban-card-actions">
+                          {t.jiraIssueUrl ? (
+                            <a
+                              href={t.jiraIssueUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="ws-icon-btn ws-icon-btn--jira"
+                              title={`Open ${t.jiraIssueKey ?? t.key} in Jira`}
+                            >
+                              <JiraIcon size={13} />
+                            </a>
+                          ) : t.jiraSyncError ? (
+                            <span className="ws-icon-btn ws-icon-btn--warn" title={t.jiraSyncError}>!</span>
+                          ) : null}
+
+                          {t.githubPrUrl ? (
+                            <a
+                              href={t.githubPrUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="ws-icon-btn ws-icon-btn--github ws-icon-btn--label"
+                              title={`Open pull request #${t.githubPrNumber}${t.githubPrState === 'merged' ? ' (merged)' : t.githubPrState === 'closed' ? ' (closed)' : ''}`}
+                            >
+                              <GithubIcon size={14} />
+                              <span>#{t.githubPrNumber}</span>
+                            </a>
+                          ) : (t.githubPrError || t.githubBranchError) ? (
+                            <span className="ws-icon-btn ws-icon-btn--warn" title={t.githubPrError ?? t.githubBranchError ?? undefined}>!</span>
+                          ) : null}
+
+                          <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} />
+
+                          {canRetryCi(t) && (
+                            <RetryCiButton
+                              onClick={() => void handleRetryPipeline(t.id)}
+                              retrying={retryingId === t.id}
+                              title="Retry the CI verification pipeline"
+                            />
                           )}
                         </div>
                         <div className="tickets-kanban-card-footer">
@@ -263,52 +279,51 @@ export default function Tickets() {
               {filtered.map((t) => {
                 const sc = statusColor(t.status);
                 return (
-                  <div
-                    key={t.id}
-                    className={`ws-table-row tickets-grid ${t.jiraIssueUrl ? 'ws-table-row--clickable' : ''}`}
-                    onClick={() => t.jiraIssueUrl && window.open(t.jiraIssueUrl, '_blank', 'noopener,noreferrer')}
-                    title={t.jiraIssueUrl ? `Open ${t.jiraIssueKey} in Jira` : undefined}
-                  >
-                    <span className="ws-mono tickets-table-key" style={t.jiraIssueKey ? { color: 'var(--color-blue)', textDecoration: 'underline' } : undefined}>
-                      {t.jiraIssueKey ?? t.key}
-                    </span>
+                  <div key={t.id} className="ws-table-row tickets-grid">
+                    <span className="ws-mono tickets-table-key">{t.jiraIssueKey ?? t.key}</span>
                     <span className="tickets-table-title">
                       {t.title}
-                      {t.jiraSyncError && (
-                        <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.jiraSyncError}> · Jira sync failed</span>
-                      )}
-                      {t.githubBranchUrl && (
-                        <a
-                          href={t.githubBranchUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="ws-mono"
-                          style={{ color: 'var(--color-text-muted)', fontSize: 11 }}
-                          onClick={(e) => e.stopPropagation()}
-                          title={`Open branch ${t.githubBranchName}`}
-                        >
-                          {' · '}{t.githubBranchName}
-                        </a>
-                      )}
-                      {t.githubBranchError && (
-                        <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.githubBranchError}> · Branch creation failed</span>
-                      )}
-                      {t.githubPrUrl && (
-                        <a
-                          href={t.githubPrUrl}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="ws-mono"
-                          style={{ color: t.githubPrState === 'merged' ? '#22C55E' : t.githubPrState === 'closed' ? '#B91C1C' : 'var(--color-blue)', fontSize: 11 }}
-                          onClick={(e) => e.stopPropagation()}
-                          title={`Open pull request #${t.githubPrNumber}`}
-                        >
-                          {' · '}PR #{t.githubPrNumber}{t.githubPrState === 'merged' ? ' · merged' : t.githubPrState === 'closed' ? ' · closed' : ''}
-                        </a>
-                      )}
-                      {t.githubPrError && (
-                        <span style={{ color: '#B91C1C', fontSize: 11 }} title={t.githubPrError}> · Fix PR issue</span>
-                      )}
+                      <span className="tickets-table-actions">
+                        {t.jiraIssueUrl ? (
+                          <a
+                            href={t.jiraIssueUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ws-icon-btn ws-icon-btn--jira ws-icon-btn--sm"
+                            title={`Open ${t.jiraIssueKey ?? t.key} in Jira`}
+                          >
+                            <JiraIcon size={11} />
+                          </a>
+                        ) : t.jiraSyncError ? (
+                          <span className="ws-icon-btn ws-icon-btn--warn ws-icon-btn--sm" title={t.jiraSyncError}>!</span>
+                        ) : null}
+
+                        {t.githubPrUrl ? (
+                          <a
+                            href={t.githubPrUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ws-icon-btn ws-icon-btn--github ws-icon-btn--sm ws-icon-btn--label"
+                            title={`Open pull request #${t.githubPrNumber}${t.githubPrState === 'merged' ? ' (merged)' : t.githubPrState === 'closed' ? ' (closed)' : ''}`}
+                          >
+                            <GithubIcon size={11} />
+                            <span>#{t.githubPrNumber}</span>
+                          </a>
+                        ) : (t.githubPrError || t.githubBranchError) ? (
+                          <span className="ws-icon-btn ws-icon-btn--warn ws-icon-btn--sm" title={t.githubPrError ?? t.githubBranchError ?? undefined}>!</span>
+                        ) : null}
+
+                        <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} size={18} />
+
+                        {canRetryCi(t) && (
+                          <RetryCiButton
+                            onClick={() => void handleRetryPipeline(t.id)}
+                            retrying={retryingId === t.id}
+                            title="Retry the CI verification pipeline"
+                            size={18}
+                          />
+                        )}
+                      </span>
                     </span>
                     <span className="tickets-table-service">{t.service}</span>
                     <span><span className={sevBadgeClass(t.severity)}>{t.severity}</span></span>

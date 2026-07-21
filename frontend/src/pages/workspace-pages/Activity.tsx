@@ -13,6 +13,7 @@ const TABS: { key: EventType | 'all'; label: string }[] = [
   { key: 'triage', label: 'Triage' },
   { key: 'ticket', label: 'Tickets' },
   { key: 'sla', label: 'SLA' },
+  { key: 'pipeline', label: 'Pipeline' },
 ];
 
 function eventIcon(type: EventType): { bg: string; icon: ReactElement } {
@@ -25,6 +26,9 @@ function eventIcon(type: EventType): { bg: string; icon: ReactElement } {
   ) };
   if (type === 'ticket') return { bg: '#DBEAFE', icon: (
     <svg width="15" height="15" viewBox="0 0 16 16" stroke="#1D4ED8" {...stroke}><path d="M2.5 6v-1A1 1 0 0 1 3.5 4h9a1 1 0 0 1 1 1v1a2 2 0 0 0 0 4v1a1 1 0 0 1-1 1h-9a1 1 0 0 1-1-1v-1a2 2 0 0 0 0-4Z" /></svg>
+  ) };
+  if (type === 'pipeline') return { bg: '#EDE9FE', icon: (
+    <svg width="15" height="15" viewBox="0 0 16 16" stroke="#6D28D9" {...stroke}><path d="M3 4.5h10" /><path d="M3 8h10" /><path d="M3 11.5h6" /><path d="M12.5 10 14 11.5 12.5 13" /></svg>
   ) };
   return { bg: '#FEE2E2', icon: (
     <svg width="15" height="15" viewBox="0 0 16 16" stroke="#B91C1C" {...stroke}><path d="M8 5v4" /><circle cx="8" cy="11.5" r="0.4" fill="#B91C1C" /><path d="M7.1 2.3 1.8 12a1 1 0 0 0 .9 1.5h10.6a1 1 0 0 0 .9-1.5L8.9 2.3a1 1 0 0 0-1.8 0Z" /></svg>

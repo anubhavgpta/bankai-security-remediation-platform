@@ -1,4 +1,4 @@
-import type { Severity, TicketStatus } from "./pipeline-types.js";
+import { PIPELINE_STAGE_LABELS, type PipelineStageName, type Severity, type TicketStatus } from "./pipeline-types.js";
 
 export interface JiraCredentials {
   site: string;
@@ -354,6 +354,147 @@ export async function addBranchComment(
           ],
         },
       }),
+    });
+    if (res.ok) return { ok: true };
+
+    const body = (await res.json().catch(() => ({}))) as { errorMessages?: string[]; errors?: Record<string, unknown> };
+    const reason =
+      body.errorMessages?.[0] ?? (body.errors && typeof body.errors === "object" ? Object.values(body.errors)[0] : undefined);
+    return { ok: false, status: res.status, message: typeof reason === "string" ? reason : undefined };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+// Never throws — same best-effort contract as addBranchComment. Posts the
+// same pass/fail + per-stage verification result that's posted as a GitHub
+// PR comment, but onto the Jira issue's own conversation thread, so evidence
+// is visible from Jira without opening GitHub. ADF has no markdown-table
+// equivalent, so stages render as a bullet list instead of a table.
+export async function addPipelineEvidenceComment(
+  creds: JiraCredentials,
+  issueKey: string,
+  input: {
+    passed: boolean;
+    stages: { name: string; conclusion: string | null }[];
+    runUrl: string | null;
+    prUrl: string | null;
+    retryNote?: string | undefined;
+  },
+): Promise<BranchCommentResult> {
+  const stageItems = input.stages.map((s) => ({
+    type: "listItem",
+    content: [
+      {
+        type: "paragraph",
+        content: [
+          {
+            type: "text",
+            text: `${PIPELINE_STAGE_LABELS[s.name as PipelineStageName] ?? s.name}: ${s.conclusion ?? "unknown"}`,
+          },
+        ],
+      },
+    ],
+  }));
+
+  const verdictText =
+    (input.passed
+      ? "CD Successful — all stages passed. This branch is verified and ready for human review; a human still merges it on GitHub."
+      : "Verification failed — review the failing stage before merging.") + (input.retryNote ? ` ${input.retryNote}` : "");
+
+  const linkParagraphContent: Record<string, unknown>[] = [];
+  if (input.runUrl) {
+    linkParagraphContent.push(
+      { type: "text", text: "View full run: " },
+      { type: "text", text: input.runUrl, marks: [{ type: "link", attrs: { href: input.runUrl } }] },
+    );
+  }
+  if (input.prUrl) {
+    if (linkParagraphContent.length) linkParagraphContent.push({ type: "text", text: "  ·  " });
+    linkParagraphContent.push(
+      { type: "text", text: "Pull request: " },
+      { type: "text", text: input.prUrl, marks: [{ type: "link", attrs: { href: input.prUrl } }] },
+    );
+  }
+
+  const content: Record<string, unknown>[] = [
+    {
+      type: "paragraph",
+      content: [{ type: "text", text: "Bankai Verification Pipeline", marks: [{ type: "strong" }] }],
+    },
+  ];
+  if (stageItems.length) {
+    content.push({ type: "bulletList", content: stageItems });
+  }
+  content.push({ type: "paragraph", content: [{ type: "text", text: verdictText }] });
+  if (linkParagraphContent.length) {
+    content.push({ type: "paragraph", content: linkParagraphContent });
+  }
+
+  try {
+    const res = await jiraFetch(creds, `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+      method: "POST",
+      body: JSON.stringify({ body: { type: "doc", version: 1, content } }),
+    });
+    if (res.ok) return { ok: true };
+
+    const body = (await res.json().catch(() => ({}))) as { errorMessages?: string[]; errors?: Record<string, unknown> };
+    const reason =
+      body.errorMessages?.[0] ?? (body.errors && typeof body.errors === "object" ? Object.values(body.errors)[0] : undefined);
+    return { ok: false, status: res.status, message: typeof reason === "string" ? reason : undefined };
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export type FixRetryCommentInput =
+  | { kind: "retrying"; attempt: number; maxAttempts: number; failedStage: string; reason: string; summary: string; commitUrl: string }
+  | { kind: "exhausted"; failedStage: string; reason: string; summary: string | null };
+
+// Never throws — same best-effort contract as addBranchComment/
+// addPipelineEvidenceComment. Posts the self-healing retry loop's progress
+// (or its terminal give-up reasoning) onto the Jira issue's own conversation
+// thread, mirroring the equivalent GitHub PR comment built in fix-retry.job.ts.
+export async function addFixRetryComment(
+  creds: JiraCredentials,
+  issueKey: string,
+  input: FixRetryCommentInput,
+): Promise<BranchCommentResult> {
+  const headerText = input.kind === "retrying" ? `Bankai Verification Pipeline — retrying (attempt ${input.attempt} of ${input.maxAttempts})` : "Bankai Verification Pipeline — needs a human";
+
+  const content: Record<string, unknown>[] = [
+    { type: "paragraph", content: [{ type: "text", text: headerText, marks: [{ type: "strong" }] }] },
+    { type: "paragraph", content: [{ type: "text", text: `${input.failedStage} failed: ${input.reason}` }] },
+  ];
+
+  if (input.kind === "retrying") {
+    content.push({ type: "paragraph", content: [{ type: "text", text: `Regenerated fix: ${input.summary}` }] });
+    content.push({
+      type: "paragraph",
+      content: [
+        { type: "text", text: "Re-running verification against " },
+        { type: "text", text: "this commit", marks: [{ type: "link", attrs: { href: input.commitUrl } }] },
+        { type: "text", text: "..." },
+      ],
+    });
+  } else {
+    content.push({
+      type: "paragraph",
+      content: [
+        {
+          type: "text",
+          text: input.summary
+            ? `Bankai could not produce a further fix: ${input.summary}`
+            : "Bankai could not produce a further fix. A human needs to review and edit the code directly.",
+        },
+      ],
+    });
+  }
+
+  try {
+    const res = await jiraFetch(creds, `/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+      method: "POST",
+      body: JSON.stringify({ body: { type: "doc", version: 1, content } }),
     });
     if (res.ok) return { ok: true };
 

@@ -648,7 +648,7 @@ export default function Settings() {
               <div className="settings-jira-error" style={{ marginTop: 12, background: '#FFFBEB', borderColor: '#FDE68A', color: '#92400E' }}>
                 Auto-rescan on push and PR-merge ticket updates aren't set up — this token couldn't create a webhook
                 automatically. Add one manually in the repo's Settings → Webhooks: payload URL <code>{github.webhookUrl}</code>,
-                content type <code>application/json</code>, events <code>push</code> and <code>pull_request</code>
+                content type <code>application/json</code>, events <code>push</code>, <code>pull_request</code>, and <code>workflow_run</code>
                 {justConnectedWebhookSecret ? (
                   <>
                     , and secret <code>{justConnectedWebhookSecret}</code> (shown once — reconnect GitHub to generate a
@@ -730,10 +730,14 @@ export default function Settings() {
             {githubError && <div className="settings-jira-error" role="alert">{githubError}</div>}
             <div className="ws-card-hint" style={{ marginBottom: 16 }}>
               Connect a repository so Bankai can scan it with AI, populate AI Triage with findings and detailed
-              remediation guidance, and open a remediation branch for each one. If a webhook can be set up, new
-              pushes are scanned automatically. Generate a{' '}
+              remediation guidance, and open a remediation branch for each one, verified by a CI pipeline before
+              you review it. If a webhook can be set up, new pushes are scanned automatically and pipeline results
+              come back in real time. Generate a{' '}
               <a href="https://github.com/settings/tokens?type=beta" target="_blank" rel="noreferrer">personal access token</a>{' '}
-              with contents read/write access to the repo (and webhooks read/write, to enable auto-rescans).
+              with: Contents (read/write), Pull requests (read/write), Actions (read/write — to run the verification
+              pipeline), Workflows (read/write — to add the pipeline file itself; this is separate from Contents),
+              and Webhooks (read/write, to enable auto-rescans and pipeline results). Classic tokens: use the
+              "repo" and "workflow" scopes together.
             </div>
             {!githubAccount?.connected && (
               <div className="ws-card-hint" style={{ marginBottom: 16 }}>

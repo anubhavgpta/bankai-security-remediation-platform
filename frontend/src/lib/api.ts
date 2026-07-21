@@ -391,6 +391,9 @@ export interface Ticket {
   githubPrUrl: string | null;
   githubPrState: "open" | "merged" | "closed" | null;
   githubPrError: string | null;
+  ciStatus: "pending_setup" | "queued" | "running" | "passed" | "failed" | null;
+  ciRunUrl: string | null;
+  ciError: string | null;
   createdAt: string;
 }
 
@@ -411,6 +414,13 @@ export function createTickets(projectId: string, findingIds: string[]): Promise<
 
 export function updateTicketStatus(projectId: string, ticketId: string, status: TicketStatus): Promise<{ ticket: Ticket }> {
   return apiFetch(`/projects/${projectId}/tickets/${ticketId}`, { method: "PATCH", body: JSON.stringify({ status }) });
+}
+
+// For a ticket whose CI verification is stuck (failed, or left at
+// 'pending_setup' from before the repo's bootstrap PR merged) — nothing else
+// retries it automatically.
+export function retryTicketPipeline(projectId: string, ticketId: string): Promise<{ queued: boolean }> {
+  return apiFetch(`/projects/${projectId}/tickets/${ticketId}/retry-pipeline`, { method: "POST" });
 }
 
 // Also polls GitHub for any ticket with an open pull request and applies
@@ -436,7 +446,7 @@ export function syncTicketsToJira(projectId: string): Promise<{
 
 export interface ActivityEvent {
   id: string;
-  type: "upload" | "triage" | "ticket" | "sla";
+  type: "upload" | "triage" | "ticket" | "sla" | "pipeline";
   actor: string;
   summary: string;
   linkLabel: string | null;
@@ -450,6 +460,7 @@ export interface Overview {
     totalCvits: number;
     slaBreachedPct: number;
     openTickets: number;
+    inReviewTickets: number;
     meanTimeToRemediateDays: number;
   };
   severityDistribution: { label: Severity; count: number; pct: number }[];

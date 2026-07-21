@@ -55,6 +55,9 @@ export interface TicketRow {
   github_pr_url: string | null;
   github_pr_state: string | null;
   github_pr_error: string | null;
+  ci_status: string | null;
+  ci_run_url: string | null;
+  ci_error: string | null;
   // Only present when selected via SELECT_TICKET's join — absent on rows
   // returned directly from the create_project_ticket* RPCs.
   findings?: { external_id: string | null } | { external_id: string | null }[] | null;
@@ -84,12 +87,15 @@ export function toPublicTicket(row: TicketRow) {
     githubPrUrl: row.github_pr_url ?? null,
     githubPrState: row.github_pr_state ?? null,
     githubPrError: row.github_pr_error ?? null,
+    ciStatus: row.ci_status ?? null,
+    ciRunUrl: row.ci_run_url ?? null,
+    ciError: row.ci_error ?? null,
     createdAt: row.created_at,
   };
 }
 
 export const SELECT_TICKET =
-  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, github_pr_number, github_pr_url, github_pr_state, github_pr_error, findings ( external_id )";
+  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, github_pr_number, github_pr_url, github_pr_state, github_pr_error, ci_status, ci_run_url, ci_error, findings ( external_id )";
 
 export interface ProjectJiraRow {
   jira_site: string | null;
@@ -480,6 +486,15 @@ export async function createTicketForFinding(
 // them) — a resolved finding means there's no more remediation work to do,
 // so any ticket still open for it should close too, in both Bankai and
 // (best-effort, same contract as every other Jira call in this file) Jira.
+//
+// Deliberately excludes tickets with an open (unmerged) PR: a rescan's
+// "not found this time" is the AI scanner's word, not proof the fix ever
+// landed on the default branch — the branch a human actually reviews and
+// merges is still open, so the real "no more remediation work to do" signal
+// (a PR merge, handled by markTicketPrMerged) hasn't fired yet. Without this
+// guard, a scan whose non-deterministic pass simply misses an
+// already-flagged, still-unfixed finding auto-closes the ticket (and pushes
+// Done to Jira) while the fix is still sitting in review.
 export async function closeTicketsForResolvedFindings(
   supabase: SupabaseClient,
   input: { projectId: string; resolvedFindingIds: string[]; jira: JiraCredentials | null },
@@ -487,12 +502,28 @@ export async function closeTicketsForResolvedFindings(
   const { projectId, resolvedFindingIds, jira } = input;
   if (resolvedFindingIds.length === 0) return;
 
+  const { data: candidates, error: selectError } = await supabase
+    .from("tickets")
+    .select("id, jira_issue_key, github_pr_state")
+    .eq("project_id", projectId)
+    .in("finding_id", resolvedFindingIds)
+    .neq("status", "Done");
+
+  if (selectError) {
+    logger.error({ err: selectError, projectId }, "Could not auto-close tickets for resolved findings");
+    return;
+  }
+
+  const toClose = (candidates ?? []).filter((t) => t.github_pr_state !== "open");
+  if (toClose.length === 0) return;
+
   const { data: closedRows, error } = await supabase
     .from("tickets")
     .update({ status: "Done" })
-    .eq("project_id", projectId)
-    .in("finding_id", resolvedFindingIds)
-    .neq("status", "Done")
+    .in(
+      "id",
+      toClose.map((t) => t.id),
+    )
     .select("id, jira_issue_key");
 
   if (error) {
@@ -568,6 +599,68 @@ export async function markTicketPrClosedWithoutMerge(
   if (error) {
     logger.error({ err: error, ...input }, "Could not mark ticket's PR as closed-without-merge");
   }
+}
+
+// Called from webhook.controller.ts's workflow_run handler once a
+// bankai-verify.yml run for this ticket completes. Purely additive to the
+// existing ticket lifecycle — ci_status never changes ticket.status or
+// blocks a human from merging on GitHub; it only gates Bankai's own UI.
+export async function markTicketPipelineResult(
+  supabase: SupabaseClient,
+  input: { projectId: string; ticketId: string; status: "passed" | "failed"; runUrl: string | null },
+): Promise<void> {
+  const { data: ticket, error } = await supabase
+    .from("tickets")
+    .update({ ci_status: input.status, ci_run_url: input.runUrl, ci_error: null })
+    .eq("id", input.ticketId)
+    .eq("project_id", input.projectId)
+    .select("id, key, title")
+    .maybeSingle();
+
+  if (error) {
+    logger.error({ err: error, ...input }, "Could not record pipeline result on ticket");
+    return;
+  }
+  if (!ticket) return;
+
+  await recordActivity(supabase, {
+    projectId: input.projectId,
+    actorId: null,
+    actorLabel: "Bankai CI",
+    eventType: "pipeline",
+    summary: input.status === "passed" ? "verification pipeline passed for" : "verification pipeline failed for",
+    linkLabel: ticket.key,
+    linkTo: "tickets",
+    meta: input.runUrl ? `${ticket.title} · ${input.runUrl}` : ticket.title,
+  });
+}
+
+// Called from webhook.controller.ts when the one-time "bankai/ci-bootstrap"
+// PR (adding bankai-verify.yml to the target repo's default branch) is
+// merged. Flips the project to 'ready' and returns every ticket that was
+// left at ci_status='pending_setup' waiting on this, so the caller can
+// re-enqueue their pipeline verification now that dispatch will work.
+export async function markBootstrapPrMerged(supabase: SupabaseClient, projectId: string): Promise<string[]> {
+  const { error: projectError } = await supabase
+    .from("projects")
+    .update({ ci_bootstrap_status: "ready" })
+    .eq("id", projectId);
+  if (projectError) {
+    logger.error({ err: projectError, projectId }, "Could not mark CI bootstrap PR as merged");
+    return [];
+  }
+
+  const { data: pending, error: pendingError } = await supabase
+    .from("tickets")
+    .select("id")
+    .eq("project_id", projectId)
+    .eq("ci_status", "pending_setup");
+  if (pendingError) {
+    logger.error({ err: pendingError, projectId }, "Could not load tickets pending CI setup after bootstrap merge");
+    return [];
+  }
+
+  return (pending ?? []).map((t) => t.id as string);
 }
 
 export interface ReconcileJiraTicketsInput {

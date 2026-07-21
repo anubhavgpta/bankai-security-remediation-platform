@@ -1,6 +1,7 @@
 import type { Request, Response } from "express";
 import { recordActivity } from "../lib/activity.js";
-import { getPullRequest, GithubApiError } from "../lib/github.js";
+import { getPullRequest, GithubApiError, repoFileExists } from "../lib/github.js";
+import { CI_WORKFLOW_PATH } from "../lib/ci-template.js";
 import { HttpError } from "../lib/http-error.js";
 import {
   addIssueToSprint,
@@ -12,9 +13,10 @@ import {
   transitionIssue,
 } from "../lib/jira.js";
 import { logger } from "../lib/logger.js";
+import { enqueuePipelineRetry } from "../lib/queue.js";
 import { requireRole } from "../lib/roles.js";
 import { computeSlaStatus, ttrStatusLabel } from "../lib/sla.js";
-import { createUserScopedSupabaseClient } from "../lib/supabase.js";
+import { createUserScopedSupabaseClient, supabaseAdmin } from "../lib/supabase.js";
 import type { Severity } from "../lib/pipeline-types.js";
 import {
   attemptBranchCreation,
@@ -41,6 +43,56 @@ function userScopedClient(req: Request) {
   return createUserScopedSupabaseClient(req.accessToken as string);
 }
 
+async function recoverPendingCiSetup(projectId: string, tickets: TicketRow[]): Promise<void> {
+  const hasPendingSetup = tickets.some((ticket) => ticket.ci_status === "pending_setup" && !!ticket.github_branch_name);
+  if (!hasPendingSetup) return;
+
+  try {
+    const { data: project, error: projectError } = await supabaseAdmin
+      .from("projects")
+      .select("ci_bootstrap_status")
+      .eq("id", projectId)
+      .single();
+    if (projectError || !project) {
+      logger.error({ err: projectError, projectId }, "Could not load CI bootstrap status for pending-ticket recovery");
+      return;
+    }
+
+    let bootstrapReady = project.ci_bootstrap_status === "ready";
+    if (!bootstrapReady) {
+      const github = await loadGithubCreds(supabaseAdmin, projectId);
+      if (!github) return;
+
+      bootstrapReady = await repoFileExists(github.creds, CI_WORKFLOW_PATH, github.defaultBranch);
+      if (bootstrapReady) {
+        const { error } = await supabaseAdmin.from("projects").update({ ci_bootstrap_status: "ready" }).eq("id", projectId);
+        if (error) {
+          logger.error({ err: error, projectId }, "Could not mark CI bootstrap ready during pending-ticket recovery");
+        }
+      }
+    }
+
+    if (!bootstrapReady) return;
+
+    const { data: pending, error: pendingError } = await supabaseAdmin
+      .from("tickets")
+      .select("id")
+      .eq("project_id", projectId)
+      .eq("ci_status", "pending_setup")
+      .not("github_branch_name", "is", null);
+    if (pendingError) {
+      logger.error({ err: pendingError, projectId }, "Could not load pending CI tickets for recovery");
+      return;
+    }
+
+    for (const ticket of pending ?? []) {
+      await enqueuePipelineRetry({ ticketId: ticket.id as string, projectId });
+    }
+  } catch (err) {
+    logger.error({ err, projectId }, "Could not recover pending CI verification tickets");
+  }
+}
+
 export async function listTickets(req: Request, res: Response): Promise<void> {
   const supabase = userScopedClient(req);
   let query = supabase.from("tickets").select(SELECT_TICKET).eq("project_id", req.project!.id);
@@ -55,7 +107,10 @@ export async function listTickets(req: Request, res: Response): Promise<void> {
     throw new HttpError(500, "Could not load tickets.");
   }
 
-  res.status(200).json({ tickets: (data as TicketRow[]).map(toPublicTicket) });
+  const tickets = data as TicketRow[];
+  void recoverPendingCiSetup(req.project!.id, tickets);
+
+  res.status(200).json({ tickets: tickets.map(toPublicTicket) });
 }
 
 export async function createTickets(req: Request, res: Response): Promise<void> {
@@ -403,4 +458,35 @@ export async function updateTicket(req: Request, res: Response): Promise<void> {
   }
 
   res.status(200).json({ ticket: toPublicTicket(ticketRow) });
+}
+
+// Manual escape hatch for a ticket whose CI verification is stuck — e.g. it
+// failed before the repo's GitHub token had the right permissions. The ticket
+// list also best-effort recovers pending_setup tickets after the bootstrap
+// workflow is present, but this keeps a user-controlled retry available.
+export async function retryTicketPipeline(req: Request, res: Response): Promise<void> {
+  requireRole(req.project!.myRole, ["owner", "admin", "editor"]);
+  const supabase = userScopedClient(req);
+
+  const { data, error } = await supabase
+    .from("tickets")
+    .update({ ci_status: null, ci_error: null, ci_run_url: null })
+    .eq("id", req.params.ticketId)
+    .eq("project_id", req.project!.id)
+    .select("id, github_branch_name")
+    .maybeSingle();
+
+  if (error) {
+    throw new HttpError(500, "Could not retry this ticket's verification pipeline.");
+  }
+  if (!data) {
+    throw new HttpError(404, "Ticket not found");
+  }
+  if (!data.github_branch_name) {
+    throw new HttpError(422, "This ticket has no remediation branch yet — nothing to verify.");
+  }
+
+  await enqueuePipelineRetry({ ticketId: data.id, projectId: req.project!.id });
+
+  res.status(202).json({ queued: true });
 }
