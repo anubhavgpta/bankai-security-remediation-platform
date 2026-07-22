@@ -3,10 +3,18 @@ import type { Request, Response } from "express";
 import { env } from "../env.js";
 import { clearAuthCookies, readAuthCookies, setAuthCookies } from "../lib/auth-cookies.js";
 import { assertArcjetAllowed } from "../lib/enforce-arcjet.js";
-import { loginArcjet, signupArcjet } from "../lib/arcjet.js";
+import { forgotPasswordArcjet, loginArcjet, signupArcjet } from "../lib/arcjet.js";
 import { HttpError } from "../lib/http-error.js";
 import { createRequestSupabaseClient, createUserScopedSupabaseClient, supabaseAdmin } from "../lib/supabase.js";
-import type { ChangePasswordInput, DeleteAccountInput, LoginInput, SignupInput, UpdateProfileInput } from "../schemas/auth.schema.js";
+import type {
+  ChangePasswordInput,
+  DeleteAccountInput,
+  ForgotPasswordInput,
+  LoginInput,
+  ResetPasswordInput,
+  SignupInput,
+  UpdateProfileInput,
+} from "../schemas/auth.schema.js";
 
 // SSO-only accounts (Google/GitHub) never set a Bankai password — surfaced
 // so the frontend can hide password-based flows (change password, the
@@ -96,6 +104,68 @@ export async function login(req: Request, res: Response): Promise<void> {
     expiresIn: data.session.expires_in,
   });
   res.status(200).json({ status: "signed_in", user: toPublicUser(data.user) });
+}
+
+// Same wording regardless of whether the address has an account, so the
+// response can't be used to enumerate registered addresses (mirrors
+// SIGNUP_ACK_MESSAGE above).
+const FORGOT_PASSWORD_ACK_MESSAGE = "If that address has an account, we've sent a password reset link to it.";
+
+export async function forgotPassword(req: Request, res: Response): Promise<void> {
+  const { email } = req.body as ForgotPasswordInput;
+
+  const decision = await forgotPasswordArcjet.protect(req);
+  assertArcjetAllowed(decision);
+
+  const supabase = createRequestSupabaseClient();
+  await supabase.auth.resetPasswordForEmail(email, {
+    redirectTo: `${env.FRONTEND_ORIGIN}/reset-password`,
+  });
+
+  res.status(200).json({ message: FORGOT_PASSWORD_ACK_MESSAGE });
+}
+
+export async function resetPassword(req: Request, res: Response): Promise<void> {
+  const { accessToken, newPassword } = req.body as ResetPasswordInput;
+
+  // A live recovery-session access token validates identically to a normal
+  // session one (see require-auth.ts) — possessing it is exactly the proof
+  // of identity we need, since it only reaches the caller via the emailed
+  // recovery link.
+  const supabase = createRequestSupabaseClient();
+  const { data, error } = await supabase.auth.getUser(accessToken);
+  if (error || !data.user || !data.user.email) {
+    throw new HttpError(401, "This reset link is invalid or has expired. Please request a new one.");
+  }
+
+  // Same admin-by-id path as changePassword: the user-scoped client's own
+  // auth.updateUser always throws "Auth session missing!" no matter who
+  // calls it, since it never has a real GoTrue session, only a manually-set
+  // header/token.
+  const { error: updateError } = await supabaseAdmin.auth.admin.updateUserById(data.user.id, { password: newPassword });
+  if (updateError) {
+    throw new HttpError(400, updateError.message);
+  }
+
+  // Mint a fresh, normal session now that the password is set, identical in
+  // shape to login's — simpler than trying to reuse/extend the recovery
+  // token's own session as a long-lived one.
+  const signInClient = createRequestSupabaseClient();
+  const { data: signInData, error: signInError } = await signInClient.auth.signInWithPassword({
+    email: data.user.email,
+    password: newPassword,
+  });
+  if (signInError || !signInData.session) {
+    res.status(200).json({ status: "password_reset" });
+    return;
+  }
+
+  setAuthCookies(res, {
+    accessToken: signInData.session.access_token,
+    refreshToken: signInData.session.refresh_token,
+    expiresIn: signInData.session.expires_in,
+  });
+  res.status(200).json({ status: "signed_in", user: toPublicUser(signInData.session.user) });
 }
 
 export async function logout(req: Request, res: Response): Promise<void> {

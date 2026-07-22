@@ -55,6 +55,18 @@ export const loginArcjet = arcjet({
 });
 
 /**
+ * Forgot-password protection: shield + a per-IP sliding-window rate limit.
+ * No protectSignup/email-validation rule here — unlike signup, telling a
+ * caller "that address looks disposable/invalid" on this endpoint would
+ * itself be an enumeration-adjacent signal, so it's intentionally left out.
+ */
+export const forgotPasswordArcjet = arcjet({
+  key: env.ARCJET_KEY,
+  characteristics: ["ip.src"],
+  rules: [shield({ mode: "LIVE" }), slidingWindow({ mode: "LIVE", interval: "10m", max: 5 })],
+});
+
+/**
  * SSO authorize protection: shield + a per-IP sliding-window rate limit,
  * deliberately without detectBot. Unlike the password login form (a fetch()
  * POST with an Origin header and standard XHR fingerprint), this route is

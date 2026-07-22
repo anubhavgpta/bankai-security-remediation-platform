@@ -65,6 +65,18 @@ export function logout(): Promise<void> {
   return apiFetch("/auth/logout", { method: "POST" });
 }
 
+export function forgotPassword(email: string): Promise<{ message: string }> {
+  return apiFetch("/auth/forgot-password", { method: "POST", body: JSON.stringify({ email }) });
+}
+
+export type ResetPasswordResult =
+  | { status: "signed_in"; user: PublicUser }
+  | { status: "password_reset" };
+
+export function resetPassword(input: { accessToken: string; newPassword: string }): Promise<ResetPasswordResult> {
+  return apiFetch("/auth/reset-password", { method: "POST", body: JSON.stringify(input) });
+}
+
 // A real browser navigation (the provider's consent screen redirects the
 // whole page), not a fetch — callers should do
 // `window.location.href = ssoAuthorizeUrl('google')`. Works for both

@@ -1,7 +1,9 @@
 import { Navigate, Route, Routes } from 'react-router-dom';
 import AccountSettings from './pages/AccountSettings';
+import ForgotPassword from './pages/ForgotPassword';
 import InviteAccept from './pages/InviteAccept';
 import Login from './pages/Login';
+import ResetPassword from './pages/ResetPassword';
 import SignUp from './pages/SignUp';
 import Onboarding from './pages/Onboarding';
 import Projects from './pages/Projects';
@@ -26,6 +28,8 @@ export default function App() {
       <Route path="/" element={<Navigate to="/login" replace />} />
       <Route path="/login" element={<Login />} />
       <Route path="/signup" element={<SignUp />} />
+      <Route path="/forgot-password" element={<ForgotPassword />} />
+      <Route path="/reset-password" element={<ResetPassword />} />
       <Route path="/onboarding" element={<Onboarding />} />
       <Route path="/projects" element={<Projects />} />
       <Route path="/projects/new" element={<NewProject />} />

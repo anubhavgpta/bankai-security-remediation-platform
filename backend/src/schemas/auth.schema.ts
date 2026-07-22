@@ -21,6 +21,12 @@ export const loginSchema = z.object({
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
+export const forgotPasswordSchema = z.object({
+  email: z.email("Enter a valid email address").trim().toLowerCase().max(254, "Email is too long"),
+});
+
+export type ForgotPasswordInput = z.infer<typeof forgotPasswordSchema>;
+
 export const updateProfileSchema = z.object({
   fullName: z.string().trim().min(1, "Full name is required").max(120, "Full name is too long"),
 });
@@ -41,6 +47,13 @@ export const changePasswordSchema = z.object({
 });
 
 export type ChangePasswordInput = z.infer<typeof changePasswordSchema>;
+
+export const resetPasswordSchema = z.object({
+  accessToken: z.string().min(1, "This reset link is invalid or has expired."),
+  newPassword: passwordSchema,
+});
+
+export type ResetPasswordInput = z.infer<typeof resetPasswordSchema>;
 
 export const deleteAccountSchema = z.object({
   // Optional: SSO-only accounts have no password to confirm with (see

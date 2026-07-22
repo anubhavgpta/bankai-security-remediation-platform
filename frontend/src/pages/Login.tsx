@@ -81,7 +81,7 @@ export default function Login() {
           <div className="auth-field">
             <div className="auth-field-row">
               <label htmlFor="login-password">Password</label>
-              <a href="#forgot" onClick={(e) => e.preventDefault()}>Forgot password?</a>
+              <Link to="/forgot-password">Forgot password?</Link>
             </div>
             <input
               id="login-password"

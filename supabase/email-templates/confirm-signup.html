@@ -1,0 +1,63 @@
+<!--
+  Supabase Auth → Email Templates → "Confirm signup"
+  Paste this whole file into the template's HTML editor.
+  Merge tags used: {{ .ConfirmationURL }}, {{ .Email }}
+-->
+<!--[if mso]>
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr><td>
+<![endif]-->
+<table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="max-width:480px;margin:0 auto;border-collapse:collapse;">
+  <tr>
+    <td style="padding-bottom:28px;" align="center">
+      <svg width="145" height="30" viewBox="0 0 713 147" fill="none" xmlns="http://www.w3.org/2000/svg" style="display:block;">
+        <path d="M0.928467 144.005C65.9285 118.005 80.4285 78.0055 96.4285 0.505493C91.9793 70.538 96.4285 120.505 176.428 144.005C96.4285 120.505 76.4285 130.005 0.928467 144.005Z" fill="black" stroke="black" stroke-width="5" stroke-linejoin="bevel"/>
+        <path d="M352.256 67.5095C352.64 68.1815 352.64 68.9975 352.256 69.6695L346.16 81.1895L340.256 84.1655L343.04 86.8535L341.264 90.0215C337.808 96.2135 331.28 100.005 324.224 100.005H257.552L255.248 98.6135L255.92 98.4215C255.92 98.4215 257.456 97.8455 259.424 96.5495L261.344 93.0935L274.064 69.7655L272.768 66.4055H350.528C351.248 66.4055 351.92 66.8375 352.256 67.5095ZM329.6 74.1335C329.648 74.0375 329.648 73.8935 329.6 73.7495C329.504 73.6535 329.408 73.5575 329.264 73.5575H292.208L291.104 75.5735L290.384 76.8695L289.472 78.5495L283.424 89.6375L281.648 92.8535H319.376L322.688 86.8055H288.656L296.24 79.6535H326.576L328.304 76.4375L329.6 74.1335ZM435.46 67.5095C435.844 68.1815 435.844 68.9975 435.46 69.6695L431.428 77.1095L424.372 89.9735L422.5 93.3335L418.852 100.005H398.644L396.34 98.6135L396.964 98.4215C396.964 98.4215 398.5 97.8935 400.612 96.4535L402.484 92.9975L405.844 86.8535H368.164L360.964 100.005H340.708L338.452 98.6135L339.124 98.4215C339.124 98.4215 340.612 97.8935 342.676 96.5015L357.268 69.7655L355.972 66.4055H433.732C434.452 66.4055 435.124 66.8375 435.46 67.5095ZM412.756 74.2295C412.804 74.1335 412.804 73.9895 412.756 73.8455C412.66 73.7495 412.564 73.6535 412.42 73.6535H375.364L372.1 79.6055L409.78 79.6535L412.756 74.2295ZM501.069 66.4535H521.325L502.893 100.005H482.685L457.149 78.2615L445.245 100.005H424.989L422.733 98.6135L423.405 98.4215C423.405 98.4215 424.893 97.9415 426.861 96.5975C426.909 96.5495 426.957 96.5015 426.957 96.5015L441.549 69.7655L440.253 66.4535H463.485L463.581 66.5015L489.117 88.2935L501.069 66.4535ZM605.704 66.4535L565.096 80.9015L581.512 100.053H558.52L547.672 87.1415L545.464 84.5015H537.88L529.432 100.053H509.176V100.005L506.92 98.6135L507.592 98.4215C507.592 98.4215 509.08 97.8935 511.144 96.5015L525.736 69.7175L524.44 66.4535H547.816L541.96 77.1095L573.688 66.4535H605.704ZM684.835 67.5095C685.219 68.1815 685.219 68.9975 684.835 69.6695L680.803 77.1095L673.747 89.9735L671.875 93.3335L668.227 100.005H648.019L645.715 98.6135L646.339 98.4215C646.339 98.4215 647.875 97.8935 649.987 96.4535L651.859 92.9975L655.219 86.8535H617.539L610.339 100.005H590.083L587.827 98.6135L588.499 98.4215C588.499 98.4215 589.987 97.8935 592.051 96.5015L606.643 69.7655L605.347 66.4055H683.107C683.827 66.4055 684.499 66.8375 684.835 67.5095ZM662.131 74.2295C662.179 74.1335 662.179 73.9895 662.131 73.8455C662.035 73.7495 661.939 73.6535 661.795 73.6535H624.739L621.475 79.6055L659.155 79.6535L662.131 74.2295ZM689.628 66.4535H713.004L701.82 86.8055L694.62 100.053H674.364L672.108 98.6615L672.78 98.4215C672.78 98.4215 674.316 97.8455 676.332 96.5015L690.924 69.7655L689.628 66.4535Z" fill="black"/>
+      </svg>
+    </td>
+  </tr>
+  <tr>
+    <td style="background:#FCFCFD;border:1px solid #E5E5EA;border-radius:16px;padding:36px 34px;">
+      <table role="presentation" width="100%" cellpadding="0" cellspacing="0">
+        <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:20px;line-height:1.3;font-weight:700;color:#1C1C1E;padding-bottom:10px;">
+          Confirm your email
+        </td></tr>
+        <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:14px;line-height:1.6;color:#3A3A3C;padding-bottom:26px;">
+          Welcome to Bankai. Confirm <strong style="color:#1C1C1E;">{{ .Email }}</strong> to activate your account and start triaging vulnerabilities.
+        </td></tr>
+        <tr><td align="center" style="padding-bottom:26px;">
+          <!--[if mso]>
+          <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" href="{{ .ConfirmationURL }}" style="height:44px;v-text-anchor:middle;width:220px;" arcsize="50%" fillcolor="#2563EB" stroke="f">
+          <center style="color:#ffffff;font-family:Arial,sans-serif;font-size:14px;font-weight:700;">Confirm email address</center>
+          </v:roundrect>
+          <![endif]-->
+          <!--[if !mso]><!-->
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+            <td style="border-radius:999px;background:#2563EB;">
+              <a href="{{ .ConfirmationURL }}" style="display:inline-block;padding:13px 32px;font-family:Arial,Helvetica,sans-serif;font-size:14px;font-weight:700;color:#ffffff;text-decoration:none;border-radius:999px;">Confirm email address</a>
+            </td>
+          </tr></table>
+          <!--<![endif]-->
+        </td></tr>
+        <tr><td style="font-family:Arial,Helvetica,sans-serif;font-size:12px;line-height:1.6;color:#8A8A8E;padding-bottom:22px;">
+          Button not working? Paste this link into your browser:<br>
+          <a href="{{ .ConfirmationURL }}" style="color:#2563EB;word-break:break-all;">{{ .ConfirmationURL }}</a>
+        </td></tr>
+        <tr><td style="border-top:1px solid #ECECEF;padding-top:20px;">
+          <table role="presentation" cellpadding="0" cellspacing="0"><tr>
+            <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:1.6;color:#3A3A3C;">
+              Didn't create this account? You can ignore this email — no account will be activated.
+            </td>
+          </tr></table>
+        </td></tr>
+      </table>
+    </td>
+  </tr>
+  <tr>
+    <td style="padding-top:22px;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;line-height:1.6;color:#8A8A8E;text-align:center;">
+      Bankai · Automated security remediation<br>This is an automated message — replies aren't monitored.
+    </td>
+  </tr>
+</table>
+<!--[if mso]>
+</td></tr></table>
+<![endif]-->
