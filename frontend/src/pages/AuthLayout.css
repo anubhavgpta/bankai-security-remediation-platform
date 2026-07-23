@@ -211,6 +211,16 @@
   line-height: 1.5;
 }
 
+.auth-fineprint-link {
+  color: var(--color-text-subtle);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.auth-fineprint-link:hover {
+  color: var(--color-text);
+}
+
 .auth-footer {
   font-size: 13px;
   color: var(--color-text-muted);

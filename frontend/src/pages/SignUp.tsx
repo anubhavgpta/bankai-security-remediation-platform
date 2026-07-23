@@ -120,7 +120,9 @@ export default function SignUp() {
         )}
 
         <div className="auth-fineprint">
-          By creating an account you agree to Bankai&apos;s Terms of Service and Privacy Policy.
+          By creating an account you agree to Bankai&apos;s{' '}
+          <Link to="/terms" className="auth-fineprint-link">Terms of Service</Link> and{' '}
+          <Link to="/privacy" className="auth-fineprint-link">Privacy Policy</Link>.
         </div>
         <div className="auth-footer">
           Already have an account? <Link to="/login">Log in</Link>

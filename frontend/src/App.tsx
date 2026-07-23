@@ -5,6 +5,8 @@ import AccountSettings from './pages/AccountSettings';
 // Lazy so framer-motion and the landing sections stay out of the app bundle
 // for authenticated users going straight to /login or /projects.
 const Landing = lazy(() => import('./pages/landing/Landing'));
+const Terms = lazy(() => import('./pages/legal/Terms'));
+const Privacy = lazy(() => import('./pages/legal/Privacy'));
 import ForgotPassword from './pages/ForgotPassword';
 import InviteAccept from './pages/InviteAccept';
 import Login from './pages/Login';
@@ -35,6 +37,22 @@ export default function App() {
         element={
           <Suspense fallback={<div style={{ minHeight: '100vh', background: '#f4f4f5' }} />}>
             <Landing />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/terms"
+        element={
+          <Suspense fallback={<div style={{ minHeight: '100vh', background: '#f4f4f5' }} />}>
+            <Terms />
+          </Suspense>
+        }
+      />
+      <Route
+        path="/privacy"
+        element={
+          <Suspense fallback={<div style={{ minHeight: '100vh', background: '#f4f4f5' }} />}>
+            <Privacy />
           </Suspense>
         }
       />

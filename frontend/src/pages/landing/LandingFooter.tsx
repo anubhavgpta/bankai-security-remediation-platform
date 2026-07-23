@@ -27,6 +27,12 @@ export default function LandingFooter() {
           <Link to="/forgot-password">Reset password</Link>
         </nav>
 
+        <nav className="ldg-footer-col" aria-label="Legal">
+          <h3 className="ldg-footer-head">Legal</h3>
+          <Link to="/terms">Terms of Service</Link>
+          <Link to="/privacy">Privacy Policy</Link>
+        </nav>
+
         <nav className="ldg-footer-col" aria-label="Open source">
           <h3 className="ldg-footer-head">Open source</h3>
           <a
