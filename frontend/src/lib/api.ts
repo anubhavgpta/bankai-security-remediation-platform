@@ -318,6 +318,7 @@ export function uploadScan(projectId: string, file: File): Promise<{ scan: Scan 
 export type Severity = "Critical" | "High" | "Medium" | "Low";
 export type Bucket = "New Delta" | "In Progress" | "Changed" | "Resolved";
 export type SlaStatus = "Missed" | "Approaching" | "On track";
+export type TicketStatus = "To Do" | "In Progress" | "In Review" | "Done";
 
 export interface Finding {
   id: string;
@@ -338,7 +339,9 @@ export interface Finding {
   rationale: string | null;
   fixAvailable: string | null;
   sourceUrl: string | null;
+  ticketId: string | null;
   ticketKey: string | null;
+  ticketStatus: TicketStatus | null;
   createdAt: string;
   source: "csv" | "github_ai" | "jira_import";
   remediationGuidance: string | null;
@@ -379,8 +382,6 @@ export function reassignFindingService(projectId: string, findingId: string, ser
 // ---------------------------------------------------------------------
 // Tickets
 // ---------------------------------------------------------------------
-
-export type TicketStatus = "To Do" | "In Progress" | "In Review" | "Done";
 
 export interface Ticket {
   id: string;
@@ -427,6 +428,12 @@ export function createTickets(projectId: string, findingIds: string[]): Promise<
 
 export function updateTicketStatus(projectId: string, ticketId: string, status: TicketStatus): Promise<{ ticket: Ticket }> {
   return apiFetch(`/projects/${projectId}/tickets/${ticketId}`, { method: "PATCH", body: JSON.stringify({ status }) });
+}
+
+// Reopens a Done ticket whose finding is still open so triage can drive
+// remediation again (e.g. after a stale Done was inherited from Jira).
+export function reopenTicket(projectId: string, ticketId: string): Promise<{ ticket: Ticket }> {
+  return apiFetch(`/projects/${projectId}/tickets/${ticketId}/reopen`, { method: "POST" });
 }
 
 // For a ticket whose CI verification is stuck (failed, or left at

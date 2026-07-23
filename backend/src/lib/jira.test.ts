@@ -1,5 +1,12 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { addIssueToSprint, getTargetSprintId, type JiraCredentials } from "./jira.js";
+import {
+  addIssueToSprint,
+  buildFindingDescription,
+  getTargetSprintId,
+  searchIssuesInProject,
+  type FindingSummary,
+  type JiraCredentials,
+} from "./jira.js";
 
 const CREDS: JiraCredentials = { site: "acme.atlassian.net", email: "dev@example.com", apiToken: "token" };
 
@@ -89,5 +96,105 @@ describe("addIssueToSprint", () => {
       status: 400,
       message: "Sprint is closed.",
     });
+  });
+});
+
+function minimalFinding(overrides: Partial<FindingSummary> = {}): FindingSummary {
+  return {
+    id: "finding-1",
+    fingerprint: "sig:src/auth.ts|CWE-79|10",
+    externalId: null,
+    title: "XSS in auth",
+    severity: "High",
+    cvssScore: null,
+    cwe: "CWE-79",
+    component: null,
+    filePath: "src/auth.ts",
+    findingType: null,
+    sourceStatus: null,
+    dateFound: null,
+    description: null,
+    fixAvailable: null,
+    sourceUrl: null,
+    commitSha: null,
+    lineStart: null,
+    lineEnd: null,
+    teamName: null,
+    service: null,
+    environment: null,
+    findingCount: 1,
+    ttrStatus: "On Track",
+    cves: null,
+    repository: "anubhavgpta/js-test-repo-2",
+    affectedPackages: null,
+    currentVersions: null,
+    fixedVersions: null,
+    recommendations: null,
+    ...overrides,
+  };
+}
+
+describe("buildFindingDescription Repo marker", () => {
+  it("writes a Repo line next to Fingerprint when the project has a github_repo", () => {
+    const text = buildFindingDescription(minimalFinding());
+    expect(text).toContain("Fingerprint: sig:src/auth.ts|CWE-79|10");
+    expect(text).toContain("Repo: anubhavgpta/js-test-repo-2");
+  });
+
+  it("omits the Repo line when the project has no connected github_repo", () => {
+    const text = buildFindingDescription(minimalFinding({ repository: null }));
+    expect(text).toContain("Fingerprint: sig:src/auth.ts|CWE-79|10");
+    expect(text).not.toMatch(/^Repo:/m);
+  });
+});
+
+describe("searchIssuesInProject Repo parsing", () => {
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  function adfParagraphs(...lines: string[]) {
+    return {
+      type: "doc",
+      content: lines.map((text) => ({
+        type: "paragraph",
+        content: [{ type: "text", text }],
+      })),
+    };
+  }
+
+  it("parses Repo onto JiraIssueSummary and does not confuse it with Repository", async () => {
+    mockJiraFetch((path) => {
+      expect(path).toBe("/rest/api/3/search/jql");
+      return jsonResponse({
+        isLast: true,
+        issues: [
+          {
+            key: "TT2-7",
+            fields: {
+              summary: "[svc] XSS",
+              description: adfParagraphs(
+                "Repository: anubhavgpta/js-test-repo-2",
+                "Fingerprint: sig:src/auth.ts|CWE-79|10",
+                "Repo: anubhavgpta/js-test-repo-2",
+              ),
+            },
+          },
+          {
+            key: "TT2-8",
+            fields: {
+              summary: "Legacy issue",
+              description: adfParagraphs("Fingerprint: sig:legacy|CWE-89|1", "Repository: anubhavgpta/js-test-repo"),
+            },
+          },
+        ],
+      });
+    });
+
+    const issues = await searchIssuesInProject(CREDS, "TT2");
+    expect(issues).toEqual([
+      expect.objectContaining({ key: "TT2-7", fingerprint: "sig:src/auth.ts|CWE-79|10", repo: "anubhavgpta/js-test-repo-2" }),
+      expect.objectContaining({ key: "TT2-8", fingerprint: "sig:legacy|CWE-89|1", repo: null }),
+    ]);
   });
 });

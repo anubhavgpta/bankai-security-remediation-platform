@@ -191,12 +191,14 @@ export const DESCRIPTION_SECTION_HEADERS = [
 // `fingerprint` is content-derived (title/component/file, or
 // CWE/file/line-bucket) so the *same* underlying vulnerability scanned into
 // a different Bankai project pointed at this same Jira project produces the
-// same value — that's what lets reconcileJiraTickets() (ticketing.ts)
-// recognize and reuse this issue instead of creating a duplicate. Title,
-// Severity, and Fingerprint always have a value, so Technical Details (and
-// the Fingerprint line specifically) is never omitted. Every label here
-// must keep its exact text — parseFindingFieldsFromDescription below parses
-// it back out.
+// same value. Repo (also in Technical Details) is the originating project's
+// github_repo — reconcileJiraTickets() uses it so two Bankai projects that
+// share one Jira project don't cross-link issues when fingerprints collide
+// (e.g. near-clone repos). Title, Severity, and Fingerprint always have a
+// value, so Technical Details (and the Fingerprint line specifically) is
+// never omitted. Every label here must keep its exact text —
+// parseFindingFieldsFromDescription / searchIssuesInProject below parse
+// them by label.
 export function buildFindingDescription(f: FindingSummary): string {
   const sections = [
     section("Overview", [
@@ -225,6 +227,11 @@ export function buildFindingDescription(f: FindingSummary): string {
       line("Date Found", f.dateFound),
       line("Fix Available", f.fixAvailable),
       line("Fingerprint", f.fingerprint),
+      // Machine-parseable repo identity for reconcile (distinct from the
+      // human-facing "Repository" Overview/Source lines). Omitted when the
+      // project has no connected github_repo — those issues fall through
+      // reconcile's legacy fingerprint-only path.
+      line("Repo", f.repository),
       line("ID", f.externalId ?? f.id),
     ]),
     section("Description", [block(f.description)]),
@@ -681,13 +688,18 @@ export interface JiraIssueSummary {
   // null if the issue's description has no parseable "Fingerprint: <value>"
   // line — e.g. a manually created issue, or one predating this feature.
   fingerprint: string | null;
+  // Originating project's github_repo from the "Repo: …" Technical Details
+  // line. null for legacy issues written before that marker existed —
+  // reconcile keeps fingerprint-only matching for those (with a warning).
+  repo: string | null;
   // The rest are only populated when `fingerprint` is non-null — parsing an
   // issue that can never be linked or imported anyway is wasted work.
   // Recovered from the issue's summary/description (the inverse of
   // buildFindingDescription's format below) so reconcileJiraTickets()
   // (ticketing.ts) can synthesize a brand-new local finding for an issue
   // that has no match in this Bankai project — e.g. one created by a
-  // different Bankai project/account pointed at the same Jira project.
+  // different Bankai project/account pointed at the same Jira project
+  // (and, after Repo filtering, the same github_repo).
   title?: string | undefined;
   service?: string | null;
   severity?: Severity | null;
@@ -848,7 +860,7 @@ export async function searchIssuesInProject(creds: JiraCredentials, projectKey: 
         const fingerprint = match?.[1] ?? null;
         const url = `${baseUrl(creds.site)}/browse/${issue.key}`;
         if (!fingerprint) {
-          results.push({ key: issue.key, url, fingerprint: null });
+          results.push({ key: issue.key, url, fingerprint: null, repo: null });
           continue;
         }
 
@@ -858,6 +870,10 @@ export async function searchIssuesInProject(creds: JiraCredentials, projectKey: 
           key: issue.key,
           url,
           fingerprint,
+          // "Repo:" is the machine marker (not Overview's "Repository:") —
+          // parseLabelLine("Repo") won't match "Repository:" because the
+          // label must be followed immediately by ":".
+          repo: parseLabelLine(text, "Repo"),
           title: summary.title || fields.title || undefined,
           service: summary.service,
           severity: fields.severity,

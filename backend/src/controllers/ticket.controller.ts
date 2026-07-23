@@ -29,6 +29,7 @@ import {
   markTicketPrMerged,
   maybeEnqueueFixPrJob,
   reconcileJiraTickets,
+  reopenTicket,
   resolveRecommendations,
   SELECT_TICKET,
   toPublicTicket,
@@ -294,8 +295,16 @@ export async function syncTickets(req: Request, res: Response): Promise<void> {
     if (row.jira_issue_key) {
       const snapshot = await getIssueSnapshot(jira.creds, row.jira_issue_key);
       if (snapshot.exists) {
+        // Pull non-Done status changes made directly in Jira. Never inherit
+        // Done from Jira alone — a linked issue may be Done for another
+        // Bankai project's resolution (or a manual close) while this
+        // finding is still open. Only closeTicketsForResolvedFindings
+        // (finding Resolved) and markTicketPrMerged (fix PR merged) may
+        // mark a ticket Done.
         const statusColumns =
-          snapshot.status && snapshot.status !== row.status ? { status: snapshot.status } : null;
+          snapshot.status && snapshot.status !== row.status && snapshot.status !== "Done"
+            ? { status: snapshot.status }
+            : null;
         if (statusColumns) statusPulled++;
         if (statusColumns) {
           await supabase
@@ -432,6 +441,32 @@ export async function updateTicket(req: Request, res: Response): Promise<void> {
   const { status } = req.body as UpdateTicketInput;
   const supabase = userScopedClient(req);
 
+  // Done is reserved for real resolution signals (finding Resolved, or fix
+  // PR merged). Manual PATCH must not close a ticket that still has open
+  // work — use reopenTicket to go the other direction.
+  if (status === "Done") {
+    const { data: current, error: loadError } = await supabase
+      .from("tickets")
+      .select("id, github_pr_state, findings ( bucket )")
+      .eq("id", req.params.ticketId)
+      .eq("project_id", req.project!.id)
+      .maybeSingle();
+    if (loadError) {
+      throw new HttpError(500, "Could not load this ticket.");
+    }
+    if (!current) {
+      throw new HttpError(404, "Ticket not found");
+    }
+    const findingRel = Array.isArray(current.findings) ? current.findings[0] : current.findings;
+    const bucket = (findingRel as { bucket: string } | null | undefined)?.bucket ?? null;
+    if (bucket !== "Resolved" && current.github_pr_state !== "merged") {
+      throw new HttpError(
+        422,
+        "A ticket can only be marked Done when its finding is Resolved or its fix pull request has merged.",
+      );
+    }
+  }
+
   const { data, error } = await supabase
     .from("tickets")
     .update({ status })
@@ -458,6 +493,17 @@ export async function updateTicket(req: Request, res: Response): Promise<void> {
     }
   }
 
+  res.status(200).json({ ticket: toPublicTicket(ticketRow) });
+}
+
+export async function reopenTicketHandler(req: Request, res: Response): Promise<void> {
+  requireRole(req.project!.myRole, ["owner", "admin", "editor"]);
+  const supabase = userScopedClient(req);
+  const ticketRow = await reopenTicket(supabase, {
+    projectId: req.project!.id,
+    ticketId: req.params.ticketId as string,
+    actor: { id: req.user!.id, label: displayNameFromUser(req.user!) },
+  });
   res.status(200).json({ ticket: toPublicTicket(ticketRow) });
 }
 

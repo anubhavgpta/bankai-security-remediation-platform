@@ -3,7 +3,7 @@ import { HttpError } from "../lib/http-error.js";
 import { requireRole } from "../lib/roles.js";
 import { computeSlaStatus, type SlaPolicyDays } from "../lib/sla.js";
 import { createUserScopedSupabaseClient } from "../lib/supabase.js";
-import type { Bucket, Severity } from "../lib/pipeline-types.js";
+import type { Bucket, Severity, TicketStatus } from "../lib/pipeline-types.js";
 import type { UpdateFindingInput } from "../schemas/finding.schema.js";
 
 function userScopedClient(req: Request) {
@@ -36,7 +36,7 @@ interface FindingRow {
   line_start: number | null;
   line_end: number | null;
   commit_sha: string | null;
-  tickets: { id: string; key: string }[] | { id: string; key: string } | null;
+  tickets: { id: string; key: string; status: TicketStatus }[] | { id: string; key: string; status: TicketStatus } | null;
 }
 
 function toPublicFinding(row: FindingRow, policyDays: SlaPolicyDays) {
@@ -69,7 +69,9 @@ function toPublicFinding(row: FindingRow, policyDays: SlaPolicyDays) {
     rationale: row.rationale,
     fixAvailable: row.fix_available,
     sourceUrl: row.source_url,
+    ticketId: ticket?.id ?? null,
     ticketKey: ticket?.key ?? null,
+    ticketStatus: ticket?.status ?? null,
     createdAt: row.created_at,
     source: row.source,
     remediationGuidance: row.remediation_guidance,
@@ -80,7 +82,7 @@ function toPublicFinding(row: FindingRow, policyDays: SlaPolicyDays) {
 }
 
 const SELECT_FINDING =
-  "id, external_id, title, service, severity, cvss_score, cwe, component, file_path, finding_type, bucket, confidence, rationale, description, fix_available, source_url, date_found, sla_due_date, first_seen_at, created_at, source, remediation_guidance, line_start, line_end, commit_sha, tickets ( id, key )";
+  "id, external_id, title, service, severity, cvss_score, cwe, component, file_path, finding_type, bucket, confidence, rationale, description, fix_available, source_url, date_found, sla_due_date, first_seen_at, created_at, source, remediation_guidance, line_start, line_end, commit_sha, tickets ( id, key, status )";
 
 export async function listFindings(req: Request, res: Response): Promise<void> {
   const supabase = userScopedClient(req);

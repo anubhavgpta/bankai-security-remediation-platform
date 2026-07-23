@@ -597,6 +597,73 @@ export async function markTicketPrMerged(
   });
 }
 
+// Reopens a Done ticket whose finding is still open (bucket != Resolved) so
+// triage can drive remediation again — e.g. after a stale Done was inherited
+// from a linked Jira issue that another project had already closed. Refuses
+// when the finding is Resolved (that ticket's work is genuinely finished).
+// Best-effort transitions the linked Jira issue back to "In Progress".
+export async function reopenTicket(
+  supabase: SupabaseClient,
+  input: { projectId: string; ticketId: string; actor: TicketingActor },
+): Promise<TicketRow> {
+  const { projectId, ticketId, actor } = input;
+
+  const { data: existing, error: loadError } = await supabase
+    .from("tickets")
+    .select("id, key, title, status, jira_issue_key, findings ( bucket )")
+    .eq("id", ticketId)
+    .eq("project_id", projectId)
+    .maybeSingle();
+
+  if (loadError) {
+    throw new HttpError(500, "Could not load this ticket to reopen.");
+  }
+  if (!existing) {
+    throw new HttpError(404, "Ticket not found");
+  }
+  if (existing.status !== "Done") {
+    throw new HttpError(422, "Only a Done ticket can be reopened.");
+  }
+
+  const findingRel = Array.isArray(existing.findings) ? existing.findings[0] : existing.findings;
+  const bucket = (findingRel as { bucket: Bucket } | null | undefined)?.bucket ?? null;
+  if (bucket === "Resolved") {
+    throw new HttpError(422, "Cannot reopen a ticket whose finding is Resolved.");
+  }
+
+  const { data: updated, error: updateError } = await supabase
+    .from("tickets")
+    .update({ status: "In Progress" })
+    .eq("id", ticketId)
+    .eq("project_id", projectId)
+    .select(SELECT_TICKET)
+    .maybeSingle();
+
+  if (updateError || !updated) {
+    throw new HttpError(500, "Could not reopen this ticket.");
+  }
+
+  const ticketRow = updated as TicketRow;
+
+  if (ticketRow.jira_issue_key) {
+    const jira = await loadJiraCreds(supabase, projectId);
+    if (jira) void transitionIssue(jira.creds, ticketRow.jira_issue_key, "In Progress");
+  }
+
+  await recordActivity(supabase, {
+    projectId,
+    actorId: actor.id,
+    actorLabel: actor.label,
+    eventType: "ticket",
+    summary: "reopened",
+    linkLabel: ticketRow.key,
+    linkTo: "tickets",
+    meta: `${ticketRow.title} · status Done → In Progress (finding still open)`,
+  });
+
+  return ticketRow;
+}
+
 // Called when a PR is closed WITHOUT being merged. Deliberately does not
 // touch ticket.status (stays at "In Review") or auto-retry fix generation —
 // "closed without merge" is ambiguous (wrong fix vs. superseded vs. no
@@ -716,7 +783,13 @@ interface ReconcileCandidateFinding {
 //    ticketed yet (Pass 1), or
 //  - imports a brand-new finding + ticket from one that matches nothing
 //    this project knows about at all (Pass 2) — e.g. an issue created by a
-//    different Bankai project/account pointed at the same Jira project.
+//    different Bankai account for the same github_repo pointed at the same
+//    Jira project.
+// Issues whose parsed "Repo:" marker disagrees with this project's
+// github_repo are skipped entirely, so two Bankai projects sharing one
+// Jira project (but wired to different GitHub repos) cannot cross-link or
+// import each other's issues when fingerprints collide. Legacy issues with
+// no "Repo:" line keep fingerprint-only matching (with a warning).
 // Either way, RLS/ownership stay untouched: each project only ever writes
 // its own findings/tickets, and tickets.finding_id stays NOT NULL/unique —
 // Pass 2 always inserts the finding before claiming a ticket for it, same
@@ -732,15 +805,17 @@ export async function reconcileJiraTickets(
 ): Promise<{ reconciled: number; imported: number }> {
   const { projectId, jira, actor, rpcName, slaPolicyDays } = input;
 
-  const { data: findings, error } = await supabase
-    .from("findings")
-    .select("id, fingerprint, title, service, severity, sla_due_date, bucket, tickets ( id )")
-    .eq("project_id", projectId);
+  const [{ data: findings, error }, { data: projectRow }] = await Promise.all([
+    supabase.from("findings").select("id, fingerprint, title, service, severity, sla_due_date, bucket, tickets ( id )").eq("project_id", projectId),
+    supabase.from("projects").select("github_repo").eq("id", projectId).single(),
+  ]);
 
   if (error) {
     logger.error({ err: error, projectId }, "Could not load findings for Jira reconciliation");
     return { reconciled: 0, imported: 0 };
   }
+
+  const projectRepo = (projectRow as { github_repo: string | null } | null)?.github_repo ?? null;
 
   const allFindings = (findings ?? []) as ReconcileCandidateFinding[];
   const knownFingerprints = new Set(allFindings.map((f) => f.fingerprint));
@@ -754,7 +829,20 @@ export async function reconcileJiraTickets(
   // newest matching issue if more than one somehow shares a fingerprint
   // (e.g. a manually duplicated issue).
   for (const issue of issues) {
-    if (issue.fingerprint && !issueByFingerprint.has(issue.fingerprint)) {
+    if (!issue.fingerprint) continue;
+
+    // Repo-aware gate: a present-and-mismatched Repo always skips. A missing
+    // Repo (legacy issues) falls through to fingerprint-only matching.
+    if (issue.repo != null) {
+      if (issue.repo !== projectRepo) continue;
+    } else {
+      logger.warn(
+        { issueKey: issue.key, projectId, projectRepo, fingerprint: issue.fingerprint },
+        "Jira issue has no Repo marker; matching by fingerprint only (legacy)",
+      );
+    }
+
+    if (!issueByFingerprint.has(issue.fingerprint)) {
       issueByFingerprint.set(issue.fingerprint, issue);
     }
   }

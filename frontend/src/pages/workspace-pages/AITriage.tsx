@@ -6,6 +6,7 @@ import {
   listFindings,
   reassignFindingBucket,
   reassignFindingService,
+  reopenTicket,
   type Bucket,
   type Finding,
   type Severity,
@@ -178,6 +179,24 @@ export default function AITriage() {
     }
   };
 
+  const handleReopenTicket = async () => {
+    if (!project || !openRow?.ticketId) return;
+    setBusy(true);
+    setActionError(null);
+    try {
+      await reopenTicket(project.id, openRow.ticketId);
+      const { findings: refreshed } = await listFindings(project.id);
+      setFindings(refreshed);
+    } catch (err) {
+      setActionError(err instanceof ApiError ? err.message : 'Could not reopen this ticket.');
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const canReopenTicket = (row: Finding) =>
+    row.bucket !== 'Resolved' && row.ticketStatus === 'Done' && !!row.ticketId;
+
   if (loadError) {
     return (
       <main className="ws-page">
@@ -270,7 +289,7 @@ export default function AITriage() {
                 className="ws-table-row ws-table-row--clickable triage-grid"
                 style={{
                   background: checked ? '#EFF6FF' : openId === r.id ? 'var(--color-bg)' : 'transparent',
-                  opacity: r.ticketKey ? 0.45 : 1,
+                  opacity: r.ticketKey && !canReopenTicket(r) ? 0.45 : 1,
                 }}
                 onClick={() => {
                   setOpenId(r.id);
@@ -299,7 +318,9 @@ export default function AITriage() {
                 <span><span className={sevBadgeClass(r.severity)}>{r.severity}</span></span>
                 <span className="ws-dot-status" style={{ color: sla.color }}><span className="ws-dot" style={{ background: sla.dot }} />{r.sla}</span>
                 <span><span className={bucketBadgeClass(r.bucket)}>{r.bucket}</span></span>
-                <span className="ws-col-right triage-review-link">{r.ticketKey ?? 'Review'}</span>
+                <span className="ws-col-right triage-review-link">
+                  {canReopenTicket(r) ? 'Reopen' : (r.ticketKey ?? 'Review')}
+                </span>
               </div>
             );
           })}
@@ -370,7 +391,10 @@ export default function AITriage() {
               {openRow.ticketKey && (
                 <div className="triage-drawer-meta-tile">
                   <div className="triage-drawer-meta-tile-label">Ticket</div>
-                  <div className="triage-drawer-meta-tile-value">{openRow.ticketKey}</div>
+                  <div className="triage-drawer-meta-tile-value">
+                    {openRow.ticketKey}
+                    {openRow.ticketStatus ? ` · ${openRow.ticketStatus}` : ''}
+                  </div>
                 </div>
               )}
             </div>
@@ -452,11 +476,28 @@ export default function AITriage() {
                   <button
                     className="ws-btn ws-btn-outline-blue"
                     style={{ flex: 1 }}
-                    disabled={busy || !!openRow.ticketKey || !canEdit(project?.myRole)}
-                    title={!canEdit(project?.myRole) ? 'Your role does not allow creating tickets.' : undefined}
-                    onClick={() => void handleMarkForJira([openRow.id])}
+                    disabled={
+                      busy ||
+                      !canEdit(project?.myRole) ||
+                      (!!openRow.ticketKey && !canReopenTicket(openRow))
+                    }
+                    title={
+                      !canEdit(project?.myRole)
+                        ? 'Your role does not allow creating tickets.'
+                        : canReopenTicket(openRow)
+                          ? `Reopen ${openRow.ticketKey} so remediation can continue`
+                          : undefined
+                    }
+                    onClick={() => {
+                      if (canReopenTicket(openRow)) void handleReopenTicket();
+                      else void handleMarkForJira([openRow.id]);
+                    }}
                   >
-                    {openRow.ticketKey ? `Ticketed · ${openRow.ticketKey}` : 'Mark for Jira'}
+                    {canReopenTicket(openRow)
+                      ? `Reopen ticket · ${openRow.ticketKey}`
+                      : openRow.ticketKey
+                        ? `Ticketed · ${openRow.ticketKey}`
+                        : 'Mark for Jira'}
                   </button>
                 </>
               )}
