@@ -24,6 +24,7 @@ interface FixPrTicketRow {
   status: string;
   github_branch_name: string | null;
   github_pr_number: number | null;
+  github_pr_low_confidence: boolean;
   github_fix_commit_sha: string | null;
   jira_issue_key: string | null;
   finding_id: string;
@@ -44,7 +45,7 @@ interface FixPrFindingRow {
 }
 
 const SELECT_FIX_PR_TICKET =
-  "id, key, status, github_branch_name, github_pr_number, github_fix_commit_sha, jira_issue_key, finding_id, findings ( fingerprint, title, source, cwe, file_path, line_start, line_end, description, rationale, remediation_guidance )";
+  "id, key, status, github_branch_name, github_pr_number, github_pr_low_confidence, github_fix_commit_sha, jira_issue_key, finding_id, findings ( fingerprint, title, source, cwe, file_path, line_start, line_end, description, rationale, remediation_guidance )";
 
 async function setTicketError(ticketId: string, message: string): Promise<void> {
   await supabaseAdmin.from("tickets").update({ status: "In Progress", github_pr_error: message }).eq("id", ticketId);
@@ -164,6 +165,11 @@ export async function processFixPrJob(job: Job<FixPrJobData>): Promise<void> {
     // generating (and committing) a second fix.
     const alreadyCommitted = ticket.github_fix_commit_sha != null && ticket.github_fix_commit_sha === headSha;
 
+    // On resume the fix object is gone, so the flag persisted at commit time
+    // is the only record of the committed fix's confidence.
+    let lowConfidence = ticket.github_pr_low_confidence;
+    let lowConfidenceSummary: string | null = null;
+
     if (!alreadyCommitted) {
       // Safety check: never overwrite work a human already pushed to this
       // branch. An empty remediation branch has zero diff against the
@@ -194,10 +200,14 @@ export async function processFixPrJob(job: Job<FixPrJobData>): Promise<void> {
       });
 
       const fix = await generateFix(findingInput, fileContent, undefined, repoContext.formattedPromptContext);
-      if (!fix || !fix.confident || fix.fixedContent === fileContent) {
-        await setTicketError(ticketId, "Could not generate a confident automatic fix for this finding.");
+      if (!fix || fix.fixedContent === fileContent) {
+        await setTicketError(ticketId, "Could not generate an automatic fix for this finding.");
         return;
       }
+      // A low-confidence fix still becomes a PR — flagged so the human
+      // reviewer decides whether to merge it — rather than being dropped.
+      lowConfidence = !fix.confident;
+      lowConfidenceSummary = lowConfidence ? fix.summary : null;
 
       // filesToUpdate is model-provided and not guaranteed disjoint from the
       // main file — the main file's fixedContent always wins on a collision.
@@ -213,18 +223,24 @@ export async function processFixPrJob(job: Job<FixPrJobData>): Promise<void> {
 
       await supabase
         .from("tickets")
-        .update({ status: "In Progress", github_fix_commit_sha: commitSha, github_pr_error: null })
+        .update({ status: "In Progress", github_fix_commit_sha: commitSha, github_pr_low_confidence: lowConfidence, github_pr_error: null })
         .eq("id", ticketId);
       await maybeTransitionJira(jira, ticket.jira_issue_key, "In Progress");
 
       headSha = commitSha;
     }
 
+    const lowConfidenceWarning = lowConfidence
+      ? `\n\n⚠️ **Low-confidence fix** — Bankai was not fully certain this change is correct and complete. ${
+          lowConfidenceSummary ? `Bankai's note: ${lowConfidenceSummary}\n\n` : ""
+        }Review with extra care before merging.`
+      : "";
+
     const pr = await createPullRequest(github.creds, {
       head: branch,
       base: github.defaultBranch,
-      title: `Fix: ${finding.title}`,
-      body: `Automatically generated fix for a Bankai finding (${finding.cwe ?? "no CWE"}) in \`${finding.file_path}\`.\n\nA human must review and merge this pull request — Bankai never merges automatically.`,
+      title: `${lowConfidence ? "Fix (low confidence)" : "Fix"}: ${finding.title}`,
+      body: `Automatically generated fix for a Bankai finding (${finding.cwe ?? "no CWE"}) in \`${finding.file_path}\`.\n\nA human must review and merge this pull request — Bankai never merges automatically.${lowConfidenceWarning}`,
     });
 
     await supabase

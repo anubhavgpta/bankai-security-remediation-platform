@@ -42,7 +42,7 @@ const RESPONSE_SCHEMA: Schema = {
     confident: {
       type: Type.BOOLEAN,
       description:
-        "true only if fixedContent is a correct, complete fix for the described vulnerability that changes nothing else. false if you cannot produce such a fix — when false, fixedContent must be returned unchanged from the original.",
+        "true only if fixedContent is a correct, complete fix for the described vulnerability that changes nothing else. false if fixedContent is a best-effort fix you are not highly sure about — a human will review it with extra care before merging.",
     },
     fixedContent: {
       type: Type.STRING,
@@ -76,7 +76,7 @@ Change only what is necessary to remediate the specific issue described — pres
 Return the ENTIRE corrected target file content in fixedContent (not a diff/patch), so it can be committed verbatim.
 If the fix requires complementary updates to related files (e.g. schema definitions or test helpers), include them in filesToUpdate.
 
-If you cannot produce a fix you are highly confident is both correct and complete, set confident:false and return fixedContent identical to the original file content.
+Always return your best-effort fix in fixedContent. If you are not highly confident the fix is both correct and complete, still return it — but set confident:false so a human reviewer knows to scrutinize it before merging, and use summary to state what you are unsure about. Only return fixedContent identical to the original file content when you cannot propose any meaningful remediation at all.
 
 Respond with JSON matching the provided schema.`;
 

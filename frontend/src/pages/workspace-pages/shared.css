@@ -339,6 +339,18 @@
   font-weight: 700;
 }
 
+/* PR opened from a low-confidence AI fix — amber instead of the usual
+   black GitHub badge, so reviewers know to scrutinize before merging. */
+.ws-icon-btn--github.ws-icon-btn--low-confidence {
+  background: #FFEDD5;
+  color: #C2410C;
+}
+
+.ws-icon-btn--github.ws-icon-btn--low-confidence:hover {
+  opacity: 0.8;
+  color: #C2410C;
+}
+
 /* CI status circle */
 
 .ci-status-circle {

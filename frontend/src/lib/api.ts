@@ -403,6 +403,7 @@ export interface Ticket {
   githubPrUrl: string | null;
   githubPrState: "open" | "merged" | "closed" | null;
   githubPrError: string | null;
+  githubPrLowConfidence: boolean;
   ciStatus: "pending_setup" | "queued" | "running" | "passed" | "failed" | null;
   ciRunUrl: string | null;
   ciError: string | null;

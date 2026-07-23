@@ -55,6 +55,7 @@ export interface TicketRow {
   github_pr_url: string | null;
   github_pr_state: string | null;
   github_pr_error: string | null;
+  github_pr_low_confidence?: boolean;
   ci_status: string | null;
   ci_run_url: string | null;
   ci_error: string | null;
@@ -88,6 +89,7 @@ export function toPublicTicket(row: TicketRow) {
     githubPrUrl: row.github_pr_url ?? null,
     githubPrState: row.github_pr_state ?? null,
     githubPrError: row.github_pr_error ?? null,
+    githubPrLowConfidence: row.github_pr_low_confidence ?? false,
     ciStatus: row.ci_status ?? null,
     ciRunUrl: row.ci_run_url ?? null,
     ciError: row.ci_error ?? null,
@@ -96,7 +98,7 @@ export function toPublicTicket(row: TicketRow) {
 }
 
 export const SELECT_TICKET =
-  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, github_pr_number, github_pr_url, github_pr_state, github_pr_error, ci_status, ci_run_url, ci_error, findings ( external_id )";
+  "id, key, title, service, severity, status, due_date, finding_id, created_at, jira_issue_key, jira_issue_url, jira_sync_error, github_branch_name, github_branch_url, github_branch_error, github_pr_number, github_pr_url, github_pr_state, github_pr_error, github_pr_low_confidence, ci_status, ci_run_url, ci_error, findings ( external_id )";
 
 export interface ProjectJiraRow {
   jira_site: string | null;

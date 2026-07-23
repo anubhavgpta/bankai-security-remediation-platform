@@ -46,6 +46,12 @@ function canRetryFix(t: Ticket): boolean {
   return !!t.githubBranchName && !t.githubPrNumber && !!t.githubPrError;
 }
 
+function prBadgeTitle(t: Ticket): string {
+  const state = t.githubPrState === 'merged' ? ' (merged)' : t.githubPrState === 'closed' ? ' (closed)' : '';
+  const lowConfidence = t.githubPrLowConfidence ? ' — low-confidence AI fix, review carefully before merging' : '';
+  return `Open pull request #${t.githubPrNumber}${state}${lowConfidence}`;
+}
+
 export default function Tickets() {
   const { project } = useProject();
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -257,8 +263,8 @@ export default function Tickets() {
                               href={t.githubPrUrl}
                               target="_blank"
                               rel="noreferrer"
-                              className="ws-icon-btn ws-icon-btn--github ws-icon-btn--label"
-                              title={`Open pull request #${t.githubPrNumber}${t.githubPrState === 'merged' ? ' (merged)' : t.githubPrState === 'closed' ? ' (closed)' : ''}`}
+                              className={`ws-icon-btn ws-icon-btn--github ws-icon-btn--label${t.githubPrLowConfidence ? ' ws-icon-btn--low-confidence' : ''}`}
+                              title={prBadgeTitle(t)}
                             >
                               <GithubIcon size={14} />
                               <span>#{t.githubPrNumber}</span>
@@ -344,8 +350,8 @@ export default function Tickets() {
                             href={t.githubPrUrl}
                             target="_blank"
                             rel="noreferrer"
-                            className="ws-icon-btn ws-icon-btn--github ws-icon-btn--sm ws-icon-btn--label"
-                            title={`Open pull request #${t.githubPrNumber}${t.githubPrState === 'merged' ? ' (merged)' : t.githubPrState === 'closed' ? ' (closed)' : ''}`}
+                            className={`ws-icon-btn ws-icon-btn--github ws-icon-btn--sm ws-icon-btn--label${t.githubPrLowConfidence ? ' ws-icon-btn--low-confidence' : ''}`}
+                            title={prBadgeTitle(t)}
                           >
                             <GithubIcon size={11} />
                             <span>#{t.githubPrNumber}</span>
