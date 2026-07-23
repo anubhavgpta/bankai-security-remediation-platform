@@ -90,6 +90,218 @@ Before changing anything, decide which of these two cases applies:
 
 If case 2 applies, set confident:false and use summary to explain, in plain language, why the failing test requires the vulnerable behavior to remain.`;
 
+const SAFE_EVALUATE_EXPRESSION_HELPER = `function safeEvaluateExpression(input) {
+  const expression = String(input).trim();
+  if (!/^[0-9+\\-*\\/%().\\s]+$/.test(expression)) {
+    throw new Error("Unsafe expression");
+  }
+
+  let index = 0;
+
+  function skipWhitespace() {
+    while (index < expression.length && /\\s/.test(expression[index])) index++;
+  }
+
+  function parseNumber() {
+    skipWhitespace();
+    const start = index;
+    while (index < expression.length && /[0-9.]/.test(expression[index])) index++;
+    if (start === index) throw new Error("Invalid expression");
+    const raw = expression.slice(start, index);
+    if (!/^\\d+(?:\\.\\d+)?$/.test(raw)) throw new Error("Invalid number");
+    return Number(raw);
+  }
+
+  function parseFactor() {
+    skipWhitespace();
+    if (expression[index] === "+") {
+      index++;
+      return parseFactor();
+    }
+    if (expression[index] === "-") {
+      index++;
+      return -parseFactor();
+    }
+    if (expression[index] === "(") {
+      index++;
+      const value = parseExpression();
+      skipWhitespace();
+      if (expression[index] !== ")") throw new Error("Unbalanced expression");
+      index++;
+      return value;
+    }
+    return parseNumber();
+  }
+
+  function parseTerm() {
+    let value = parseFactor();
+    while (true) {
+      skipWhitespace();
+      const operator = expression[index];
+      if (operator !== "*" && operator !== "/" && operator !== "%") break;
+      index++;
+      const right = parseFactor();
+      if (operator === "*") value *= right;
+      else if (operator === "/") value /= right;
+      else value %= right;
+    }
+    return value;
+  }
+
+  function parseExpression() {
+    let value = parseTerm();
+    while (true) {
+      skipWhitespace();
+      const operator = expression[index];
+      if (operator !== "+" && operator !== "-") break;
+      index++;
+      const right = parseTerm();
+      if (operator === "+") value += right;
+      else value -= right;
+    }
+    return value;
+  }
+
+  const result = parseExpression();
+  skipWhitespace();
+  if (index !== expression.length || !Number.isFinite(result)) {
+    throw new Error("Invalid expression");
+  }
+  return result;
+}`;
+
+function isEvalCodeInjectionFinding(finding: FixFindingInput): boolean {
+  const text = [finding.title, finding.cwe ?? "", finding.evidence, finding.remediationGuidance].join(" ").toLowerCase();
+  return (
+    (text.includes("eval") && (text.includes("code injection") || text.includes("injection") || text.includes("unsafe"))) ||
+    text.includes("cwe-94") ||
+    text.includes("cwe-95")
+  );
+}
+
+function isJavaScriptLikePath(filePath: string): boolean {
+  return /\.(?:c?m?js|jsx|tsx?|vue|svelte)$/i.test(filePath);
+}
+
+function findMatchingParen(source: string, openIndex: number): number {
+  let depth = 0;
+  let quote: '"' | "'" | "`" | null = null;
+  let escaped = false;
+  let lineComment = false;
+  let blockComment = false;
+
+  for (let i = openIndex; i < source.length; i++) {
+    const char = source[i];
+    const next = source[i + 1];
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
+    }
+    if (blockComment) {
+      if (char === "*" && next === "/") {
+        blockComment = false;
+        i++;
+      }
+      continue;
+    }
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = null;
+      }
+      continue;
+    }
+
+    if (char === "/" && next === "/") {
+      lineComment = true;
+      i++;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockComment = true;
+      i++;
+      continue;
+    }
+    if (char === '"' || char === "'" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") depth++;
+    if (char === ")") {
+      depth--;
+      if (depth === 0) return i;
+    }
+  }
+
+  return -1;
+}
+
+function replaceEvalCalls(source: string): { content: string; replacements: number } {
+  const evalCallPattern = /\beval\s*\(/g;
+  let output = "";
+  let cursor = 0;
+  let replacements = 0;
+  let match: RegExpExecArray | null;
+
+  while ((match = evalCallPattern.exec(source))) {
+    const evalIndex = match.index;
+    const before = source[evalIndex - 1];
+    const afterName = source[evalIndex + 4];
+    if ((before && /[$\w]/.test(before)) || (afterName && /[$\w]/.test(afterName))) continue;
+
+    const openIndex = source.indexOf("(", evalIndex);
+    const closeIndex = findMatchingParen(source, openIndex);
+    if (closeIndex === -1) continue;
+
+    const argument = source.slice(openIndex + 1, closeIndex).trim();
+    output += source.slice(cursor, evalIndex);
+    output += `safeEvaluateExpression(${argument})`;
+    cursor = closeIndex + 1;
+    replacements++;
+    evalCallPattern.lastIndex = closeIndex + 1;
+  }
+
+  return { content: output + source.slice(cursor), replacements };
+}
+
+function insertHelper(source: string, helper: string): string {
+  if (source.includes("function safeEvaluateExpression(") || source.includes("const safeEvaluateExpression")) {
+    return source;
+  }
+
+  const shebangMatch = source.match(/^#!.*\n/);
+  const shebang = shebangMatch?.[0] ?? "";
+  let rest = source.slice(shebang.length);
+  const directiveMatch = rest.match(/^((?:\s*["']use strict["'];?\s*\n)+)/);
+  const directiveBlock = directiveMatch?.[0] ?? "";
+  rest = rest.slice(directiveBlock.length);
+
+  return `${shebang}${directiveBlock}${helper}\n\n${rest}`;
+}
+
+export function generateDeterministicFix(finding: FixFindingInput, fileContent: string): GeneratedFix | null {
+  if (!isJavaScriptLikePath(finding.filePath) || !isEvalCodeInjectionFinding(finding) || !/\beval\s*\(/.test(fileContent)) {
+    return null;
+  }
+
+  const replaced = replaceEvalCalls(fileContent);
+  if (replaced.replacements === 0 || replaced.content === fileContent) {
+    return null;
+  }
+
+  const fixedContent = insertHelper(replaced.content, SAFE_EVALUATE_EXPRESSION_HELPER);
+  return {
+    confident: true,
+    fixedContent,
+    summary:
+      "Replaced unsafe eval() execution with a small arithmetic expression parser that rejects non-expression input before evaluation.",
+  };
+}
+
 function buildUserPrompt(
   finding: FixFindingInput,
   fileContent: string,
@@ -191,5 +403,10 @@ export async function generateFix(
   }
 
   logger.error({ filePath: finding.filePath }, "Dropping fix generation after repeated Gemini failures");
+  const deterministicFix = retryContext ? null : generateDeterministicFix(finding, fileContent);
+  if (deterministicFix) {
+    logger.warn({ filePath: finding.filePath }, "Using deterministic eval-remediation fallback after repeated Gemini failures");
+    return deterministicFix;
+  }
   return null;
 }

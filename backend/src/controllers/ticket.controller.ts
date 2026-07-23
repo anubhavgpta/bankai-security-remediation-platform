@@ -491,3 +491,48 @@ export async function retryTicketPipeline(req: Request, res: Response): Promise<
 
   res.status(202).json({ queued: true });
 }
+
+// Manual escape hatch for tickets where Bankai created the remediation branch
+// but Gemini/fix generation failed before a pull request existed.
+export async function retryTicketFix(req: Request, res: Response): Promise<void> {
+  requireRole(req.project!.myRole, ["owner", "admin", "editor"]);
+  const supabase = userScopedClient(req);
+
+  const { data, error } = await supabase
+    .from("tickets")
+    .select("id, github_branch_name, github_pr_number")
+    .eq("id", req.params.ticketId)
+    .eq("project_id", req.project!.id)
+    .maybeSingle();
+
+  if (error) {
+    throw new HttpError(500, "Could not retry this ticket's fix generation.");
+  }
+  if (!data) {
+    throw new HttpError(404, "Ticket not found");
+  }
+  if (!data.github_branch_name) {
+    throw new HttpError(422, "This ticket does not have a remediation branch yet.");
+  }
+  if (data.github_pr_number != null) {
+    throw new HttpError(422, "This ticket already has a pull request. Retry the CI pipeline instead.");
+  }
+
+  const { error: updateError } = await supabase
+    .from("tickets")
+    .update({
+      status: "In Progress",
+      github_pr_error: null,
+      ci_status: null,
+      ci_error: null,
+      ci_run_url: null,
+    })
+    .eq("id", data.id);
+  if (updateError) {
+    throw new HttpError(500, "Could not retry this ticket's fix generation.");
+  }
+
+  await enqueueFixPrResume({ ticketId: data.id, projectId: req.project!.id });
+
+  res.status(202).json({ queued: true });
+}

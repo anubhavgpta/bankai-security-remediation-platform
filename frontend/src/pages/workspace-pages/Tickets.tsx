@@ -5,7 +5,7 @@ import GithubIcon from '../../components/GithubIcon';
 import JiraIcon from '../../components/JiraIcon';
 import CiStatusCircle from '../../components/CiStatusCircle';
 import RetryCiButton from '../../components/RetryCiButton';
-import { ApiError, listTickets, retryTicketPipeline, syncTicketsToJira, type Severity, type Ticket, type TicketStatus } from '../../lib/api';
+import { ApiError, listTickets, retryTicketFix, retryTicketPipeline, syncTicketsToJira, type Severity, type Ticket, type TicketStatus } from '../../lib/api';
 import { canEdit } from '../../lib/roles';
 import { useProject } from '../../lib/project-context';
 import './Tickets.css';
@@ -42,6 +42,10 @@ function canRetryCi(t: Ticket): boolean {
   return t.ciStatus === 'pending_setup' || t.ciStatus === 'failed' || (!t.ciStatus && !!t.ciError);
 }
 
+function canRetryFix(t: Ticket): boolean {
+  return !!t.githubBranchName && !t.githubPrNumber && !!t.githubPrError;
+}
+
 export default function Tickets() {
   const { project } = useProject();
   const [tickets, setTickets] = useState<Ticket[] | null>(null);
@@ -52,6 +56,7 @@ export default function Tickets() {
   const [syncing, setSyncing] = useState(false);
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [retryingFixId, setRetryingFixId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!project) return;
@@ -108,6 +113,20 @@ export default function Tickets() {
       // it changed) is the source of truth, not a toast here.
     } finally {
       setRetryingId(null);
+    }
+  };
+
+  const handleRetryFix = async (ticketId: string) => {
+    if (!project) return;
+    setRetryingFixId(ticketId);
+    try {
+      await retryTicketFix(project.id, ticketId);
+      const { tickets: refreshed } = await listTickets(project.id);
+      setTickets(refreshed);
+    } catch {
+      // The ticket's githubPrError is the durable source of truth.
+    } finally {
+      setRetryingFixId(null);
     }
   };
 
@@ -244,13 +263,35 @@ export default function Tickets() {
                               <GithubIcon size={14} />
                               <span>#{t.githubPrNumber}</span>
                             </a>
-                          ) : (t.githubPrError || t.githubBranchError) ? (
+                          ) : t.githubBranchUrl ? (
+                            <a
+                              href={t.githubBranchUrl}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="ws-icon-btn ws-icon-btn--github"
+                              title={`Open remediation branch ${t.githubBranchName}`}
+                            >
+                              <GithubIcon size={14} />
+                            </a>
+                          ) : null}
+
+                          {!t.githubPrUrl && (t.githubPrError || t.githubBranchError) ? (
                             <span className="ws-icon-btn ws-icon-btn--warn" title={t.githubPrError ?? t.githubBranchError ?? undefined}>!</span>
                           ) : null}
 
-                          <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} />
+                          {canRetryFix(t) && (
+                            <RetryCiButton
+                              onClick={() => void handleRetryFix(t.id)}
+                              retrying={retryingFixId === t.id}
+                              title="Retry Gemini fix generation"
+                            />
+                          )}
 
-                          {canRetryCi(t) && (
+                          {t.githubPrUrl ? (
+                            <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} />
+                          ) : null}
+
+                          {t.githubPrUrl && canRetryCi(t) && (
                             <RetryCiButton
                               onClick={() => void handleRetryPipeline(t.id)}
                               retrying={retryingId === t.id}
@@ -309,13 +350,36 @@ export default function Tickets() {
                             <GithubIcon size={11} />
                             <span>#{t.githubPrNumber}</span>
                           </a>
-                        ) : (t.githubPrError || t.githubBranchError) ? (
+                        ) : t.githubBranchUrl ? (
+                          <a
+                            href={t.githubBranchUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="ws-icon-btn ws-icon-btn--github ws-icon-btn--sm"
+                            title={`Open remediation branch ${t.githubBranchName}`}
+                          >
+                            <GithubIcon size={11} />
+                          </a>
+                        ) : null}
+
+                        {!t.githubPrUrl && (t.githubPrError || t.githubBranchError) ? (
                           <span className="ws-icon-btn ws-icon-btn--warn ws-icon-btn--sm" title={t.githubPrError ?? t.githubBranchError ?? undefined}>!</span>
                         ) : null}
 
-                        <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} size={18} />
+                        {canRetryFix(t) && (
+                          <RetryCiButton
+                            onClick={() => void handleRetryFix(t.id)}
+                            retrying={retryingFixId === t.id}
+                            title="Retry Gemini fix generation"
+                            size={18}
+                          />
+                        )}
 
-                        {canRetryCi(t) && (
+                        {t.githubPrUrl ? (
+                          <CiStatusCircle status={t.ciStatus} runUrl={t.ciRunUrl} error={t.ciError} size={18} />
+                        ) : null}
+
+                        {t.githubPrUrl && canRetryCi(t) && (
                           <RetryCiButton
                             onClick={() => void handleRetryPipeline(t.id)}
                             retrying={retryingId === t.id}

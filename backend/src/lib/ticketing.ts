@@ -258,7 +258,17 @@ export async function attemptBranchCreation(
   ticketId: string,
   projectId: string,
   ticketKey: string,
-): Promise<{ github_branch_name: string | null; github_branch_url: string | null; github_branch_error: string | null } | null> {
+): Promise<
+  | {
+      github_branch_name: string;
+      github_branch_url: string;
+      github_branch_error: null;
+      github_pr_error: null;
+      status: "In Progress";
+    }
+  | { github_branch_name: null; github_branch_url: null; github_branch_error: string }
+  | null
+> {
   if (!github) return null;
   try {
     const name = buildBranchName(fingerprint, cwe, filePath, { projectId, ticketKey });
@@ -271,8 +281,15 @@ export async function attemptBranchCreation(
         "Could not post the remediation branch link as a Jira comment",
       );
     }
+    void transitionIssue(jiraCreds, issueKey, "In Progress");
 
-    return { github_branch_name: branch.name, github_branch_url: branch.url, github_branch_error: null };
+    return {
+      github_branch_name: branch.name,
+      github_branch_url: branch.url,
+      github_branch_error: null,
+      github_pr_error: null,
+      status: "In Progress",
+    };
   } catch (err) {
     const message = err instanceof GithubApiError ? err.message : "Could not create a remediation branch.";
     logger.error({ err, ticketId }, "GitHub branch creation failed");

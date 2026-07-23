@@ -47,7 +47,7 @@ const SELECT_FIX_PR_TICKET =
   "id, key, status, github_branch_name, github_pr_number, github_fix_commit_sha, jira_issue_key, finding_id, findings ( fingerprint, title, source, cwe, file_path, line_start, line_end, description, rationale, remediation_guidance )";
 
 async function setTicketError(ticketId: string, message: string): Promise<void> {
-  await supabaseAdmin.from("tickets").update({ github_pr_error: message }).eq("id", ticketId);
+  await supabaseAdmin.from("tickets").update({ status: "In Progress", github_pr_error: message }).eq("id", ticketId);
 }
 
 async function maybeTransitionJira(jira: { creds: JiraCredentials } | null, issueKey: string | null, status: "In Progress" | "In Review"): Promise<void> {

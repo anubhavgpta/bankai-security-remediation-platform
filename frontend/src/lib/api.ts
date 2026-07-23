@@ -435,6 +435,10 @@ export function retryTicketPipeline(projectId: string, ticketId: string): Promis
   return apiFetch(`/projects/${projectId}/tickets/${ticketId}/retry-pipeline`, { method: "POST" });
 }
 
+export function retryTicketFix(projectId: string, ticketId: string): Promise<{ queued: boolean }> {
+  return apiFetch(`/projects/${projectId}/tickets/${ticketId}/retry-fix`, { method: "POST" });
+}
+
 // Also polls GitHub for any ticket with an open pull request and applies
 // the merged/closed transition — a fallback for when GitHub's pull_request
 // webhook can't reach this backend (e.g. local dev with no public URL), so
