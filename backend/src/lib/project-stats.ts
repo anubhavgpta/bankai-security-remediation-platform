@@ -27,10 +27,15 @@ export async function computeProjectStats(supabase: SupabaseClient, projectId: s
       .maybeSingle(),
   ]);
 
-  const open = (findingsRes.data ?? []).filter((f) => f.bucket !== "Resolved");
+  const findings = findingsRes.data ?? [];
+  const open = findings.filter((f) => f.bucket !== "Resolved");
   const missed = open.filter((f) => computeSlaStatus(f.severity as Severity, f.sla_due_date, policyDays) === "Missed").length;
-  const totalCvits = open.length;
-  const slaBreachedPct = totalCvits > 0 ? Math.round((missed / totalCvits) * 1000) / 10 : 0;
+  // "Total CVITs" is every CVIT this project has scanned, including ones since
+  // resolved — jira-imported findings are already excluded by the query above.
+  const totalCvits = findings.length;
+  // SLA breach rate stays scoped to still-open findings: a resolved finding
+  // can't breach, so it must not sit in the denominator.
+  const slaBreachedPct = open.length > 0 ? Math.round((missed / open.length) * 1000) / 10 : 0;
   const openTickets = (ticketsRes.data ?? []).filter((t) => t.status !== "Done").length;
 
   return {

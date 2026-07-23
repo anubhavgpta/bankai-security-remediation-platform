@@ -39,12 +39,17 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
     throw new HttpError(500, "Could not load the project overview.");
   }
 
-  const open = (findingsRes.data ?? []).filter((f) => f.bucket !== "Resolved");
+  const findings = findingsRes.data ?? [];
+  const open = findings.filter((f) => f.bucket !== "Resolved");
   const withSla = open.map((f) => ({ ...f, slaStatus: computeSlaStatus(f.severity as Severity, f.sla_due_date, req.project!.slaPolicyDays) }));
 
-  const totalCvits = open.length;
+  // "Total CVITs" is every CVIT scanned for this project, resolved or not.
+  const totalCvits = findings.length;
+  // The risk views below (SLA %, severity split) describe current exposure, so
+  // they stay scoped to still-open findings via openCount.
+  const openCount = open.length;
   const missed = withSla.filter((f) => f.slaStatus === "Missed").length;
-  const slaBreachedPct = totalCvits > 0 ? Math.round((missed / totalCvits) * 1000) / 10 : 0;
+  const slaBreachedPct = openCount > 0 ? Math.round((missed / openCount) * 1000) / 10 : 0;
 
   const tickets = ticketsRes.data ?? [];
   const openTickets = tickets.filter((t) => t.status !== "Done").length;
@@ -67,7 +72,7 @@ export async function getOverview(req: Request, res: Response): Promise<void> {
   const severityDistribution = SEVERITY_ORDER.map((label) => ({
     label,
     count: severityCounts[label],
-    pct: totalCvits > 0 ? Math.round((severityCounts[label] / totalCvits) * 100) : 0,
+    pct: openCount > 0 ? Math.round((severityCounts[label] / openCount) * 100) : 0,
   }));
 
   const serviceMap = new Map<string, { total: number; missed: number; approaching: number; onTrack: number }>();
